@@ -3,7 +3,7 @@
 | Task | Description | Spec | Requirements |
 |------|-------------|------|--------------|
 | [x] 01 | Project setup: Python structure, Docker Oracle DB, env config, CLI entry point | [task-01-project-setup.md](../specs/task-01-project-setup.md) | REQ-1 |
-| [ ] 02 | Code parsing pipeline: file walking, chunking at function/class/module boundaries | [task-02-code-parsing.md](../specs/task-02-code-parsing.md) | REQ-3 |
+| [x] 02 | Code parsing pipeline: file walking, chunking at function/class/module boundaries | [task-02-code-parsing.md](../specs/task-02-code-parsing.md) | REQ-3 |
 | [ ] 03 | Embedding and vector storage: voyage-code-3, Oracle DB schema, vector + full-text indexes | [task-03-embedding-storage.md](../specs/task-03-embedding-storage.md) | REQ-3 |
 | [ ] 04 | Semantic retrieval: hybrid vector + full-text search, CLI query interface | [task-04-semantic-retrieval.md](../specs/task-04-semantic-retrieval.md) | REQ-4 |
 | [ ] 05 | LLM-powered explanations: LangChain retrieval chains, plain-language answers | [task-05-llm-explanations.md](../specs/task-05-llm-explanations.md) | REQ-5 |
