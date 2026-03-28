@@ -1,6 +1,19 @@
 """CodeRankEmbed embedding client wrapper using local inference."""
 
-from sentence_transformers import SentenceTransformer
+import contextlib
+import io
+import os
+
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+import logging  # noqa: E402
+
+for _name in ("sentence_transformers", "huggingface_hub", "transformers"):
+    logging.getLogger(_name).setLevel(logging.ERROR)
+
+from sentence_transformers import SentenceTransformer  # noqa: E402
 
 
 class CodeRankEmbedder:
@@ -11,7 +24,9 @@ class CodeRankEmbedder:
     QUERY_PREFIX = "Represent this query for searching relevant code: "
 
     def __init__(self) -> None:
-        self._model = SentenceTransformer(self.MODEL, trust_remote_code=True)
+        with contextlib.redirect_stderr(io.StringIO()), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self._model = SentenceTransformer(self.MODEL, trust_remote_code=True)
 
     def _prepare(self, text: str, input_type: str) -> str:
         """Prepend the query prefix when input_type is 'query'."""

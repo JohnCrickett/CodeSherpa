@@ -6,7 +6,9 @@ import sys
 from codesherpa.config import MissingConfigError, load_config
 from codesherpa.db import DatabaseConnectionError, get_connection
 from codesherpa.embeddings import CodeRankEmbedder
+from codesherpa.explanation import ExplanationResult, explain
 from codesherpa.ingestion import ensure_schema, ingest
+from codesherpa.llm import get_llm
 from codesherpa.repo import RepoError, resolve_source
 from codesherpa.retrieval import SearchResult, hybrid_search
 
@@ -34,6 +36,10 @@ def build_parser() -> argparse.ArgumentParser:
     # query subcommand
     subparsers.add_parser("query", help="Search ingested code interactively")
 
+    # ask subcommand
+    ask_parser = subparsers.add_parser("ask", help="Ask a question about ingested code")
+    ask_parser.add_argument("question", help="Natural language question about the codebase")
+
     return parser
 
 
@@ -57,6 +63,25 @@ def format_results(results: list[SearchResult]) -> str:
             f"Type: {r.chunk_type} | Language: {r.language} | Score: {r.score:.2f}\n"
             f"\n{r.code_text}\n"
         )
+    return "\n".join(parts)
+
+
+def format_explanation(result: ExplanationResult) -> str:
+    """Format an explanation result for display.
+
+    Args:
+        result: The ExplanationResult to format.
+
+    Returns:
+        Formatted string ready for printing.
+    """
+    parts = [result.explanation, ""]
+    if result.sources:
+        parts.append("--- Sources ---")
+        for i, s in enumerate(result.sources, 1):
+            parts.append(
+                f"  [{i}] {s.file_path} ({s.chunk_type}, chars {s.start_char}-{s.end_char})"
+            )
     return "\n".join(parts)
 
 
@@ -133,5 +158,12 @@ def main(argv: list[str] | None = None) -> None:
             print("Loading embedding model...")
             embedder = CodeRankEmbedder()
             run_query_repl(conn, embedder)
+
+        elif args.command == "ask":
+            print("Loading embedding model...")
+            embedder = CodeRankEmbedder()
+            llm = get_llm(api_key=config.llm_api_key, model=config.llm_model)
+            result = explain(conn, embedder, llm, args.question)
+            print(format_explanation(result))
     finally:
         conn.close()

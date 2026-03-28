@@ -24,6 +24,12 @@
 - `codesherpa/ingestion.py` has `ensure_schema()`, `compute_file_hash()`, and `ingest()` (parse → embed → store pipeline with re-ingestion support).
 - Re-ingestion uses SHA-256 file content hashes to detect changes; deletes chunks for removed files.
 
+## Explanation
+- `codesherpa/explanation.py` has `ExplanationResult` dataclass (explanation + sources) and `explain()` function.
+- `explain()` uses `hybrid_search` to retrieve chunks, formats them as context, passes to LLM via LangChain `SystemMessage` + `HumanMessage`.
+- CLI has `ask` subcommand: `codesherpa ask "question"` for one-shot LLM-powered explanations.
+- `format_explanation()` in `cli.py` renders the explanation text followed by a sources list.
+
 ## Retrieval
 - `codesherpa/retrieval.py` has `vector_search()`, `fulltext_search()`, and `hybrid_search()` returning `SearchResult` dataclass instances.
 - Vector search uses `(1 - VECTOR_DISTANCE(embedding, :vec, COSINE))` for cosine similarity (Oracle returns distance, not similarity).

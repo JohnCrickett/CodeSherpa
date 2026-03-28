@@ -4,7 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codesherpa.cli import build_parser, format_results, run_query_repl
+from codesherpa.cli import build_parser, format_explanation, format_results, run_query_repl
+from codesherpa.explanation import ExplanationResult
 from codesherpa.retrieval import SearchResult
 
 
@@ -48,6 +49,19 @@ class TestCLI:
         parser = build_parser()
         args = parser.parse_args(["query"])
         assert args.command == "query"
+
+    def test_ask_subcommand_accepts_question(self):
+        """Ask subcommand accepts a question positional argument."""
+        parser = build_parser()
+        args = parser.parse_args(["ask", "What does foo do?"])
+        assert args.command == "ask"
+        assert args.question == "What does foo do?"
+
+    def test_ask_requires_question(self):
+        """Ask subcommand requires a question argument."""
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["ask"])
 
     def test_displays_help(self, capsys):
         """CLI displays usage information with --help."""
@@ -155,3 +169,29 @@ class TestQueryREPL:
             run_query_repl(conn, embedder)
 
         mock_search.assert_not_called()
+
+
+class TestFormatExplanation:
+    """Tests for explanation result formatting."""
+
+    def test_includes_explanation_text(self):
+        """Formatted output includes the explanation text."""
+        result = ExplanationResult(explanation="foo does bar", sources=[])
+        output = format_explanation(result)
+        assert "foo does bar" in output
+
+    def test_includes_source_file_paths(self):
+        """Formatted output lists source file paths."""
+        sources = [
+            SearchResult("def foo(): ...", "src/main.py", "function", "python", 0, 15, 0.9),
+        ]
+        result = ExplanationResult(explanation="explanation", sources=sources)
+        output = format_explanation(result)
+        assert "src/main.py" in output
+        assert "Sources" in output
+
+    def test_no_sources_section_when_empty(self):
+        """No sources section when there are no source chunks."""
+        result = ExplanationResult(explanation="no code found", sources=[])
+        output = format_explanation(result)
+        assert "Sources" not in output
