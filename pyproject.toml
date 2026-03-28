@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codesherpa"
+version = "0.1.0"
+description = "AI-powered codebase exploration and explanation tool"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=0.3",
+    "langchain-google-genai>=2.0",
+    "langgraph>=0.2",
+    "oracledb>=2.0",
+    "sentence-transformers>=3.0",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+codesherpa = "codesherpa.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["codesherpa*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
