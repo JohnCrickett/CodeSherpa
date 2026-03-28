@@ -30,6 +30,14 @@
 - CLI has `ask` subcommand: `codesherpa ask "question"` for one-shot LLM-powered explanations.
 - `format_explanation()` in `cli.py` renders the explanation text followed by a sources list.
 
+## Project Management
+- `codesherpa/project.py` has PROJECTS table CRUD: `create_project()`, `get_project()`, `list_projects()`, `delete_project()`, `get_or_create_project()`, `update_project_stats()`.
+- PROJECTS table columns: id (identity), name (unique), source_path, created_at, last_ingested_at, file_count, chunk_count.
+- CODE_CHUNKS table now has `project_id` column (NOT NULL) for project isolation.
+- All ingestion and retrieval functions accept `project_id` parameter to scope operations to a single project.
+- CLI commands: `ingest` auto-creates project via `get_or_create_project()`; `query`/`ask` require `--project` flag; `project list`/`project delete` for management.
+- Existing CLI tests were updated to pass `--project` and `project_id` where required by the new interface.
+
 ## Retrieval
 - `codesherpa/retrieval.py` has `vector_search()`, `fulltext_search()`, and `hybrid_search()` returning `SearchResult` dataclass instances.
 - Vector search uses `(1 - VECTOR_DISTANCE(embedding, :vec, COSINE))` for cosine similarity (Oracle returns distance, not similarity).

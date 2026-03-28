@@ -7,7 +7,7 @@
 | [x] 03 | Embedding and vector storage: CodeRankEmbed, Oracle DB schema, vector + full-text indexes | [task-03-embedding-storage.md](../specs/task-03-embedding-storage.md) | REQ-3 |
 | [x] 04 | Semantic retrieval: hybrid vector + full-text search, CLI query interface | [task-04-semantic-retrieval.md](../specs/task-04-semantic-retrieval.md) | REQ-4 |
 | [x] 05 | LLM-powered explanations: LangChain retrieval chains, plain-language answers | [task-05-llm-explanations.md](../specs/task-05-llm-explanations.md) | REQ-5 |
-| [ ] 06 | Project management: named projects, isolation, metadata, incremental re-ingestion | [task-06-project-management.md](../specs/task-06-project-management.md) | REQ-1, REQ-2 |
+| [x] 06 | Project management: named projects, isolation, metadata, incremental re-ingestion | [task-06-project-management.md](../specs/task-06-project-management.md) | REQ-1, REQ-2 |
 | [ ] 07 | Web interface: auto-launch, query panel, file tree, code display, loading state | [task-07-web-interface.md](../specs/task-07-web-interface.md) | REQ-1, REQ-8 |
 | [ ] 08 | Agent memory: episodic + semantic memory, LangGraph memory-aware routing | [task-08-agent-memory.md](../specs/task-08-agent-memory.md) | REQ-7 |
 | [ ] 09 | Intelligent navigation: multi-step retrieval, follow-ups, exploration planning, map query | [task-09-intelligent-navigation.md](../specs/task-09-intelligent-navigation.md) | REQ-6 |

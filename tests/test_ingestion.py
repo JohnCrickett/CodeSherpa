@@ -85,6 +85,25 @@ class TestEnsureSchema:
         assert "CTXSYS" in executed_sql or "CONTEXT" in executed_sql
 
 
+    def test_migrates_existing_table_adds_project_id(self):
+        """When table exists but lacks project_id, ALTER TABLE is executed."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        # table exists (1), column does NOT exist (0), indexes exist (1, 1)
+        mock_cursor.fetchone.side_effect = [(1,), (0,), (1,), (1,)]
+
+        ensure_schema(mock_conn)
+
+        executed_sql = " ".join(
+            str(c.args[0]) for c in mock_cursor.execute.call_args_list
+        ).upper()
+        assert "ALTER TABLE" in executed_sql
+        assert "PROJECT_ID" in executed_sql
+
+
 class TestBatchEmbedding:
     """Tests for batch embedding support in CodeRankEmbedder."""
 

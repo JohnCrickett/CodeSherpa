@@ -21,6 +21,7 @@ TABLE_NAME = "CODE_CHUNKS"
 _CREATE_TABLE_SQL = f"""
 CREATE TABLE {TABLE_NAME} (
     id          NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    project_id  NUMBER         NOT NULL,
     embedding   VECTOR(768, FLOAT64),
     code_text   CLOB,
     file_path   VARCHAR2(1000) NOT NULL,
@@ -72,11 +73,32 @@ def _index_exists(cursor: oracledb.Cursor, index_name: str) -> bool:
     return row is not None and row[0] > 0
 
 
+def _column_exists(cursor: oracledb.Cursor, column_name: str) -> bool:
+    """Check whether a column exists on the CODE_CHUNKS table."""
+    cursor.execute(
+        "SELECT COUNT(*) FROM user_tab_columns "
+        "WHERE table_name = :1 AND column_name = :2",
+        [TABLE_NAME, column_name.upper()],
+    )
+    row = cursor.fetchone()
+    return row is not None and row[0] > 0
+
+
+def _migrate_add_project_id(cursor: oracledb.Cursor) -> None:
+    """Add project_id column to an existing CODE_CHUNKS table if missing."""
+    if not _column_exists(cursor, "PROJECT_ID"):
+        cursor.execute(
+            f"ALTER TABLE {TABLE_NAME} ADD project_id NUMBER"
+        )
+
+
 def ensure_schema(conn: oracledb.Connection) -> None:
     """Create the CODE_CHUNKS table and indexes if they do not exist."""
     with conn.cursor() as cursor:
         if not _table_exists(cursor):
             cursor.execute(_CREATE_TABLE_SQL)
+        else:
+            _migrate_add_project_id(cursor)
 
         if not _index_exists(cursor, "IDX_CHUNKS_VECTOR"):
             cursor.execute(_CREATE_VECTOR_INDEX_SQL)
@@ -87,19 +109,24 @@ def ensure_schema(conn: oracledb.Connection) -> None:
     conn.commit()
 
 
-def _get_existing_file_hashes(cursor: oracledb.Cursor) -> dict[str, str]:
-    """Return a mapping of file_path → file_hash for all stored files."""
+def _get_existing_file_hashes(
+    cursor: oracledb.Cursor, project_id: int
+) -> dict[str, str]:
+    """Return a mapping of file_path → file_hash for a project's stored files."""
     cursor.execute(
-        f"SELECT DISTINCT file_path, file_hash FROM {TABLE_NAME}"
+        f"SELECT DISTINCT file_path, file_hash FROM {TABLE_NAME} WHERE project_id = :1",
+        [project_id],
     )
     return {row[0]: row[1] for row in cursor.fetchall()}
 
 
-def _delete_chunks_for_file(cursor: oracledb.Cursor, file_path: str) -> None:
-    """Remove all stored chunks for a given file path."""
+def _delete_chunks_for_file(
+    cursor: oracledb.Cursor, file_path: str, project_id: int
+) -> None:
+    """Remove all stored chunks for a given file path within a project."""
     cursor.execute(
-        f"DELETE FROM {TABLE_NAME} WHERE file_path = :1",
-        [file_path],
+        f"DELETE FROM {TABLE_NAME} WHERE file_path = :1 AND project_id = :2",
+        [file_path, project_id],
     )
 
 
@@ -108,11 +135,13 @@ def _insert_chunks(
     chunks: list[CodeChunk],
     embeddings: list[list[float]],
     file_hash: str,
+    project_id: int,
 ) -> None:
     """Insert embedded chunks into the database."""
     rows = []
     for chunk, embedding in zip(chunks, embeddings):
         rows.append({
+            "project_id": project_id,
             "embedding": embedding,
             "code_text": chunk.content,
             "file_path": chunk.file_path,
@@ -126,10 +155,10 @@ def _insert_chunks(
     cursor.setinputsizes(embedding=oracledb.DB_TYPE_VECTOR)
     cursor.executemany(
         f"""INSERT INTO {TABLE_NAME}
-            (embedding, code_text, file_path, chunk_type, language,
+            (project_id, embedding, code_text, file_path, chunk_type, language,
              start_char, end_char, file_hash)
         VALUES
-            (:embedding, :code_text, :file_path, :chunk_type, :language,
+            (:project_id, :embedding, :code_text, :file_path, :chunk_type, :language,
              :start_char, :end_char, :file_hash)""",
         rows,
     )
@@ -139,6 +168,7 @@ def ingest(
     conn: oracledb.Connection,
     embedder: CodeRankEmbedder,
     root: str,
+    project_id: int = 1,
 ) -> dict[str, int]:
     """Run the full parse → embed → store pipeline.
 
@@ -149,6 +179,7 @@ def ingest(
         conn: An active Oracle Database connection.
         embedder: The embedding client.
         root: Root directory of the codebase to ingest.
+        project_id: The project to associate chunks with.
 
     Returns:
         A dict with keys: chunks_stored, files_skipped, files_updated,
@@ -162,7 +193,7 @@ def ingest(
     }
 
     with conn.cursor() as cursor:
-        existing_hashes = _get_existing_file_hashes(cursor)
+        existing_hashes = _get_existing_file_hashes(cursor, project_id)
 
         # Parse the codebase
         all_chunks, errors = parse_codebase(root)
@@ -196,7 +227,7 @@ def ingest(
 
             # File is new or changed — delete old chunks if any
             if old_hash is not None:
-                _delete_chunks_for_file(cursor, rel_path)
+                _delete_chunks_for_file(cursor, rel_path, project_id)
                 stats["files_updated"] += 1
             files_to_embed[rel_path] = chunks
 
@@ -204,7 +235,7 @@ def ingest(
         current_rel_paths = set(current_hashes.keys())
         for old_path in existing_hashes:
             if old_path not in current_rel_paths:
-                _delete_chunks_for_file(cursor, old_path)
+                _delete_chunks_for_file(cursor, old_path, project_id)
                 stats["files_deleted"] += 1
 
         # Embed and store new/changed chunks in batches
@@ -235,7 +266,8 @@ def ingest(
                 n = len(chunks)
                 chunk_embeddings = embeddings[idx : idx + n]
                 _insert_chunks(
-                    cursor, chunks, chunk_embeddings, current_hashes[rel_path]
+                    cursor, chunks, chunk_embeddings, current_hashes[rel_path],
+                    project_id,
                 )
                 idx += n
 

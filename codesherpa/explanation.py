@@ -47,6 +47,7 @@ def explain(
     llm,
     question: str,
     top_k: int = 10,
+    project_id: int | None = None,
 ) -> ExplanationResult:
     """Retrieve relevant code and generate a plain-language explanation.
 
@@ -56,11 +57,12 @@ def explain(
         llm: LangChain LLM instance.
         question: The user's natural language question.
         top_k: Maximum number of code chunks to retrieve.
+        project_id: If provided, restrict search to this project.
 
     Returns:
         ExplanationResult with the explanation text and source chunks.
     """
-    chunks = hybrid_search(conn, embedder, question, top_k=top_k)
+    chunks = hybrid_search(conn, embedder, question, top_k=top_k, project_id=project_id)
     context = _format_context(chunks)
 
     messages = [

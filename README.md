@@ -66,10 +66,10 @@ If `--project` is not provided, the directory name is used as the project name.
 
 ### Querying the codebase
 
-After ingesting, start an interactive search session:
+After ingesting, start an interactive search session for a project:
 
 ```sh
-uv run codesherpa query
+uv run codesherpa query --project my-project
 ```
 
 This opens a REPL where you can type natural language questions or exact identifiers:
@@ -84,6 +84,34 @@ Each result shows the matching code, its file path and character range, chunk ty
 
 Type `quit` or `exit` (or press Ctrl+D) to leave the REPL.
 
+### Asking questions
+
+Get a plain-language explanation of code in a project:
+
+```sh
+uv run codesherpa ask --project my-project "How does authentication work?"
+```
+
+This retrieves relevant code chunks and uses an LLM to generate a concise explanation with source references.
+
+### Managing projects
+
+Each ingested codebase is stored as a named project. Projects are isolated — queries against one project never return results from another.
+
+List all projects:
+
+```sh
+uv run codesherpa project list
+```
+
+Delete a project and all its data:
+
+```sh
+uv run codesherpa project delete my-project
+```
+
+Re-ingesting into an existing project is incremental — only changed files are re-embedded, and deleted files are cleaned up.
+
 ## Verifying the Database
 
 You can connect to the Oracle database with `sqlplus` to inspect ingested data:
@@ -97,19 +125,23 @@ Replace `<your_password>` with the value of `ORACLE_PASSWORD` from your `.env` f
 Useful queries:
 
 ```sql
+-- List projects
+SELECT name, source_path, file_count, chunk_count, last_ingested_at FROM PROJECTS;
+
 -- Count total ingested chunks
 SELECT COUNT(*) FROM CODE_CHUNKS;
 
--- List all indexed files
-SELECT DISTINCT file_path FROM CODE_CHUNKS;
+-- Count chunks per project
+SELECT p.name, COUNT(*) FROM CODE_CHUNKS c JOIN PROJECTS p ON c.project_id = p.id GROUP BY p.name;
 
--- Clear all ingested data (keeps the schema)
-TRUNCATE TABLE CODE_CHUNKS;
+-- List all indexed files for a project
+SELECT DISTINCT file_path FROM CODE_CHUNKS WHERE project_id = 1;
 
 -- Drop everything and start fresh
 DROP INDEX idx_chunks_fulltext;
 DROP INDEX idx_chunks_vector;
 DROP TABLE CODE_CHUNKS;
+DROP TABLE PROJECTS;
 ```
 
 ## Development
@@ -140,11 +172,13 @@ codesherpa/       Main Python package
   config.py       Environment configuration loading
   db.py           Oracle Database connection
   embeddings.py   Embedding model integration
+  explanation.py  LLM-powered code explanations
   ingestion.py    Codebase ingestion pipeline
-  retrieval.py    Hybrid vector + full-text search
-  parser.py       Code parsing and chunking
-  repo.py         Local path and GitHub URL resolution
   llm.py          LLM integration
+  parser.py       Code parsing and chunking
+  project.py      Project management and isolation
+  repo.py         Local path and GitHub URL resolution
+  retrieval.py    Hybrid vector + full-text search
 tests/            Test suite (pytest)
 specs/            Task specifications
 plans/            Implementation plan

@@ -9,6 +9,16 @@ from codesherpa.embeddings import CodeRankEmbedder
 from codesherpa.explanation import ExplanationResult, explain
 from codesherpa.ingestion import ensure_schema, ingest
 from codesherpa.llm import get_llm
+from codesherpa.project import (
+    ProjectNotFoundError,
+    delete_project,
+    ensure_projects_schema,
+    get_or_create_project,
+    get_project,
+    list_projects,
+    migrate_orphaned_chunks,
+    update_project_stats,
+)
 from codesherpa.repo import RepoError, resolve_source
 from codesherpa.retrieval import SearchResult, hybrid_search
 
@@ -34,11 +44,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # query subcommand
-    subparsers.add_parser("query", help="Search ingested code interactively")
+    query_parser = subparsers.add_parser("query", help="Search ingested code interactively")
+    query_parser.add_argument(
+        "--project", required=True,
+        help="Name of the project to query",
+    )
 
     # ask subcommand
     ask_parser = subparsers.add_parser("ask", help="Ask a question about ingested code")
     ask_parser.add_argument("question", help="Natural language question about the codebase")
+    ask_parser.add_argument(
+        "--project", required=True,
+        help="Name of the project to query",
+    )
+
+    # project subcommand group
+    project_parser = subparsers.add_parser("project", help="Manage projects")
+    project_sub = project_parser.add_subparsers(dest="project_command", required=True)
+
+    project_sub.add_parser("list", help="List all projects")
+
+    project_delete_parser = project_sub.add_parser("delete", help="Delete a project")
+    project_delete_parser.add_argument("name", help="Name of the project to delete")
 
     return parser
 
@@ -85,12 +112,15 @@ def format_explanation(result: ExplanationResult) -> str:
     return "\n".join(parts)
 
 
-def run_query_repl(conn, embedder: CodeRankEmbedder) -> None:
+def run_query_repl(
+    conn, embedder: CodeRankEmbedder, project_id: int
+) -> None:
     """Run the interactive query REPL.
 
     Args:
         conn: Oracle Database connection.
         embedder: Embedding client for query encoding.
+        project_id: The project to restrict searches to.
     """
     print("CodeSherpa query mode. Type 'quit' or 'exit' to leave.\n")
     while True:
@@ -106,7 +136,9 @@ def run_query_repl(conn, embedder: CodeRankEmbedder) -> None:
         if not query.strip():
             continue
 
-        results = hybrid_search(conn, embedder, query.strip())
+        results = hybrid_search(
+            conn, embedder, query.strip(), project_id=project_id
+        )
         print(format_results(results))
 
 
@@ -132,6 +164,10 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     try:
+        ensure_projects_schema(conn)
+        ensure_schema(conn)
+        migrate_orphaned_chunks(conn)
+
         if args.command == "ingest":
             try:
                 local_path = resolve_source(args.source)
@@ -142,11 +178,24 @@ def main(argv: list[str] | None = None) -> None:
             project_name = args.project or local_path.rstrip("/").split("/")[-1]
             print(f"CodeSherpa: Indexing '{project_name}' from {args.source}")
 
-            ensure_schema(conn)
+            project_id = get_or_create_project(conn, project_name, local_path)
+
             print("Loading embedding model...")
             embedder = CodeRankEmbedder()
             print("Ingesting codebase...")
-            stats = ingest(conn, embedder, local_path)
+            stats = ingest(conn, embedder, local_path, project_id=project_id)
+
+            # Count total files and chunks for this project
+            from codesherpa.parser import walk_directory
+            file_count = len(walk_directory(local_path))
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM CODE_CHUNKS WHERE project_id = :1",
+                    [project_id],
+                )
+                chunk_count = cursor.fetchone()[0]
+            update_project_stats(conn, project_id, file_count, chunk_count)
+
             print(
                 f"Done: {stats['chunks_stored']} chunks stored, "
                 f"{stats['files_skipped']} files unchanged, "
@@ -155,15 +204,51 @@ def main(argv: list[str] | None = None) -> None:
             )
 
         elif args.command == "query":
+            try:
+                project = get_project(conn, args.project)
+            except ProjectNotFoundError as exc:
+                print(f"Project error: {exc}", file=sys.stderr)
+                sys.exit(1)
+
             print("Loading embedding model...")
             embedder = CodeRankEmbedder()
-            run_query_repl(conn, embedder)
+            run_query_repl(conn, embedder, project_id=project["id"])
 
         elif args.command == "ask":
+            try:
+                project = get_project(conn, args.project)
+            except ProjectNotFoundError as exc:
+                print(f"Project error: {exc}", file=sys.stderr)
+                sys.exit(1)
+
             print("Loading embedding model...")
             embedder = CodeRankEmbedder()
             llm = get_llm(api_key=config.llm_api_key, model=config.llm_model)
-            result = explain(conn, embedder, llm, args.question)
+            result = explain(
+                conn, embedder, llm, args.question, project_id=project["id"]
+            )
             print(format_explanation(result))
+
+        elif args.command == "project":
+            if args.project_command == "list":
+                projects = list_projects(conn)
+                if not projects:
+                    print("No projects found.")
+                else:
+                    for p in projects:
+                        ingested = p["last_ingested_at"] or "never"
+                        print(
+                            f"  {p['name']}: {p['source_path']} "
+                            f"({p['file_count']} files, {p['chunk_count']} chunks, "
+                            f"last ingested: {ingested})"
+                        )
+
+            elif args.project_command == "delete":
+                try:
+                    delete_project(conn, args.name)
+                    print(f"Deleted project '{args.name}'.")
+                except ProjectNotFoundError as exc:
+                    print(f"Project error: {exc}", file=sys.stderr)
+                    sys.exit(1)
     finally:
         conn.close()

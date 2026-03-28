@@ -47,15 +47,17 @@ class TestCLI:
     def test_query_subcommand_exists(self):
         """Query subcommand is accepted by the parser."""
         parser = build_parser()
-        args = parser.parse_args(["query"])
+        args = parser.parse_args(["query", "--project", "myproj"])
         assert args.command == "query"
+        assert args.project == "myproj"
 
     def test_ask_subcommand_accepts_question(self):
         """Ask subcommand accepts a question positional argument."""
         parser = build_parser()
-        args = parser.parse_args(["ask", "What does foo do?"])
+        args = parser.parse_args(["ask", "--project", "myproj", "What does foo do?"])
         assert args.command == "ask"
         assert args.question == "What does foo do?"
+        assert args.project == "myproj"
 
     def test_ask_requires_question(self):
         """Ask subcommand requires a question argument."""
@@ -119,7 +121,7 @@ class TestQueryREPL:
 
         with patch("builtins.input", side_effect=["quit"]), \
              patch("builtins.print"):
-            run_query_repl(conn, embedder)
+            run_query_repl(conn, embedder, project_id=1)
 
         # Should not have called hybrid_search for "quit"
 
@@ -130,7 +132,7 @@ class TestQueryREPL:
 
         with patch("builtins.input", side_effect=["exit"]), \
              patch("builtins.print"):
-            run_query_repl(conn, embedder)
+            run_query_repl(conn, embedder, project_id=1)
 
     def test_exits_on_eof(self):
         """REPL exits on EOF (Ctrl+D)."""
@@ -139,7 +141,7 @@ class TestQueryREPL:
 
         with patch("builtins.input", side_effect=EOFError), \
              patch("builtins.print"):
-            run_query_repl(conn, embedder)
+            run_query_repl(conn, embedder, project_id=1)
 
     def test_processes_query_and_displays_results(self):
         """REPL calls hybrid_search and displays formatted results."""
@@ -152,7 +154,7 @@ class TestQueryREPL:
         with patch("builtins.input", side_effect=["find foo", "quit"]), \
              patch("codesherpa.cli.hybrid_search", return_value=mock_results), \
              patch("builtins.print") as mock_print:
-            run_query_repl(conn, embedder)
+            run_query_repl(conn, embedder, project_id=1)
 
         # Should have printed results containing the file path
         printed = " ".join(str(c) for c in mock_print.call_args_list)
@@ -166,7 +168,7 @@ class TestQueryREPL:
         with patch("builtins.input", side_effect=["", "  ", "quit"]), \
              patch("codesherpa.cli.hybrid_search") as mock_search, \
              patch("builtins.print"):
-            run_query_repl(conn, embedder)
+            run_query_repl(conn, embedder, project_id=1)
 
         mock_search.assert_not_called()
 
