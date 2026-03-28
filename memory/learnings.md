@@ -23,3 +23,11 @@
 - Vector index: `IDX_CHUNKS_VECTOR` (COSINE distance). Full-text index: `IDX_CHUNKS_FULLTEXT` (CTXSYS.CONTEXT).
 - `codesherpa/ingestion.py` has `ensure_schema()`, `compute_file_hash()`, and `ingest()` (parse → embed → store pipeline with re-ingestion support).
 - Re-ingestion uses SHA-256 file content hashes to detect changes; deletes chunks for removed files.
+
+## Retrieval
+- `codesherpa/retrieval.py` has `vector_search()`, `fulltext_search()`, and `hybrid_search()` returning `SearchResult` dataclass instances.
+- Vector search uses `(1 - VECTOR_DISTANCE(embedding, :vec, COSINE))` for cosine similarity (Oracle returns distance, not similarity).
+- Full-text search uses `CONTAINS(code_text, :query, 1) > 0` with `SCORE(1)` for relevance ranking.
+- Hybrid search deduplicates by `(file_path, start_char, end_char)` tuple, keeping the higher score.
+- CLI was restructured to use subcommands: `codesherpa ingest <source>` and `codesherpa query` (interactive REPL).
+- `format_results()` and `run_query_repl()` are in `cli.py` and are tested independently.

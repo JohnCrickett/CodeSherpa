@@ -42,25 +42,47 @@ An AI-powered tool that helps software engineers explore and understand unfamili
 
 ## Usage
 
+### Ingesting a codebase
+
 Index a local codebase:
 
 ```sh
-uv run codesherpa /path/to/your/project
+uv run codesherpa ingest /path/to/your/project
 ```
 
 Index a GitHub repository (cloned automatically):
 
 ```sh
-uv run codesherpa https://github.com/owner/repo
+uv run codesherpa ingest https://github.com/owner/repo
 ```
 
 Specify a custom project name:
 
 ```sh
-uv run codesherpa /path/to/project --project my-project
+uv run codesherpa ingest /path/to/project --project my-project
 ```
 
 If `--project` is not provided, the directory name is used as the project name.
+
+### Querying the codebase
+
+After ingesting, start an interactive search session:
+
+```sh
+uv run codesherpa query
+```
+
+This opens a REPL where you can type natural language questions or exact identifiers:
+
+```
+query> how does ingestion work?
+query> compute_file_hash
+query> class that handles database connections
+```
+
+Each result shows the matching code, its file path and character range, chunk type, language, and a relevance score. The search combines vector similarity (semantic meaning) with full-text matching (exact identifiers and keywords), deduplicating and ranking the merged results.
+
+Type `quit` or `exit` (or press Ctrl+D) to leave the REPL.
 
 ## Verifying the Database
 
@@ -119,6 +141,7 @@ codesherpa/       Main Python package
   db.py           Oracle Database connection
   embeddings.py   Embedding model integration
   ingestion.py    Codebase ingestion pipeline
+  retrieval.py    Hybrid vector + full-text search
   parser.py       Code parsing and chunking
   repo.py         Local path and GitHub URL resolution
   llm.py          LLM integration
