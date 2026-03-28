@@ -1,7 +1,7 @@
 # Task 03: Embedding and Vector Storage
 
 ## Objective
-Embed code chunks using `voyage-code-3` and store them with metadata in Oracle Database 23ai, with both vector and full-text indexes.
+Embed code chunks using `CodeRankEmbed` (via sentence-transformers) and store them with metadata in Oracle Database 23ai, with both vector and full-text indexes.
 
 ## Requirements Covered
 - REQ-3: Ingestion (embedding, storage, indexing, re-ingestion)
@@ -9,12 +9,12 @@ Embed code chunks using `voyage-code-3` and store them with metadata in Oracle D
 ## Acceptance Criteria
 
 ### Embedding
-- Generate 1024-dimensional vector embeddings for each chunk using Voyage AI `voyage-code-3`
-- Batch embedding calls where possible to reduce API overhead
+- Generate 768-dimensional vector embeddings for each chunk using `nomic-ai/CodeRankEmbed` (local inference via sentence-transformers)
+- Batch embedding calls where possible to reduce overhead
 
 ### Oracle Database Storage
 - Create a table schema with columns for:
-  - Embedding vector (VECTOR type, 1024 dimensions)
+  - Embedding vector (VECTOR type, 768 dimensions)
   - Code text (CLOB)
   - File path, chunk type, language, start_char, end_char (metadata columns)
   - File content hash (for detecting changes on re-ingestion)

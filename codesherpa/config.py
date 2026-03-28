@@ -1,5 +1,7 @@
 """Environment configuration loading and validation."""
 
+import os
+import re
 from dataclasses import dataclass
 
 from dotenv import dotenv_values
@@ -17,6 +19,8 @@ REQUIRED_VARS = [
     "LLM_MODEL",
 ]
 
+_ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
+
 
 @dataclass(frozen=True)
 class Config:
@@ -29,8 +33,16 @@ class Config:
     llm_model: str
 
 
+def _resolve_env_refs(value: str) -> str:
+    """Resolve ${VAR} references in a value using the process environment."""
+    return _ENV_VAR_RE.sub(lambda m: os.environ.get(m.group(1), m.group(0)), value)
+
+
 def load_config(env_path: str = ".env") -> Config:
     """Load and validate configuration from a .env file.
+
+    Values may reference environment variables using ${VAR_NAME} syntax,
+    e.g. LLM_API_KEY=${GOOGLE_API_KEY}.
 
     Args:
         env_path: Path to the .env file.
@@ -41,7 +53,8 @@ def load_config(env_path: str = ".env") -> Config:
     Raises:
         MissingConfigError: If any required variable is missing.
     """
-    values = dotenv_values(env_path)
+    raw_values = dotenv_values(env_path)
+    values = {k: _resolve_env_refs(v) for k, v in raw_values.items() if v is not None}
 
     missing = [var for var in REQUIRED_VARS if not values.get(var)]
     if missing:

@@ -5,6 +5,9 @@ import sys
 
 from codesherpa.config import MissingConfigError, load_config
 from codesherpa.db import DatabaseConnectionError, get_connection
+from codesherpa.embeddings import CodeRankEmbedder
+from codesherpa.ingestion import ensure_schema, ingest
+from codesherpa.repo import RepoError, resolve_source
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,10 +45,30 @@ def main(argv: list[str] | None = None) -> None:
             user=config.oracle_user,
             password=config.oracle_password,
         )
-        conn.close()
     except DatabaseConnectionError as exc:
         print(f"Database error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    project_name = args.project or args.source.rstrip("/").split("/")[-1]
+    try:
+        local_path = resolve_source(args.source)
+    except RepoError as exc:
+        print(f"Source error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    project_name = args.project or local_path.rstrip("/").split("/")[-1]
     print(f"CodeSherpa: Indexing '{project_name}' from {args.source}")
+
+    try:
+        ensure_schema(conn)
+        print("Loading embedding model...")
+        embedder = CodeRankEmbedder()
+        print("Ingesting codebase...")
+        stats = ingest(conn, embedder, local_path)
+        print(
+            f"Done: {stats['chunks_stored']} chunks stored, "
+            f"{stats['files_skipped']} files unchanged, "
+            f"{stats['files_updated']} files updated, "
+            f"{stats['files_deleted']} files removed."
+        )
+    finally:
+        conn.close()

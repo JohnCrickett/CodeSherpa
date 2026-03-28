@@ -15,3 +15,11 @@
 ## Parser
 - Python parsing uses `ast` module; other languages use regex-based detection. No tree-sitter dependency needed.
 - `CodeChunk` dataclass has: content, file_path, chunk_type, language, start_char, end_char.
+
+## Embeddings & Storage
+- Embeddings use `CodeRankEmbedder` (768-dim, CodeRankEmbed via sentence-transformers), not Voyage AI (compatibility issue) or nomic-embed-code (too much RAM).
+- `CodeRankEmbedder.embed_batch()` supports batch embedding; `embed()` for single text. Queries get a prefix prepended; documents do not.
+- Oracle DB table is `CODE_CHUNKS` with columns: id, embedding (VECTOR(768, FLOAT64)), code_text (CLOB), file_path, chunk_type, language, start_char, end_char, file_hash.
+- Vector index: `IDX_CHUNKS_VECTOR` (COSINE distance). Full-text index: `IDX_CHUNKS_FULLTEXT` (CTXSYS.CONTEXT).
+- `codesherpa/ingestion.py` has `ensure_schema()`, `compute_file_hash()`, and `ingest()` (parse → embed → store pipeline with re-ingestion support).
+- Re-ingestion uses SHA-256 file content hashes to detect changes; deletes chunks for removed files.
