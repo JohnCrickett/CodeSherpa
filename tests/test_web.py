@@ -122,10 +122,10 @@ class TestAskEndpoint:
         result = ExplanationResult(explanation="f is a function", sources=sources)
 
         mock_graph = MagicMock()
-        mock_graph.invoke.return_value = {"response": result}
+        mock_graph.invoke.return_value = {"response": result, "dependencies": []}
 
         with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
-            with patch("codesherpa.web.build_query_graph", return_value=mock_graph):
+            with patch("codesherpa.web.build_navigation_graph", return_value=mock_graph):
                 resp = client.post(
                     "/api/projects/1/ask",
                     json={"question": "What does f do?"},
@@ -165,10 +165,10 @@ class TestAskEndpoint:
         result = ExplanationResult(explanation="it does stuff", sources=[])
 
         mock_graph = MagicMock()
-        mock_graph.invoke.return_value = {"response": result}
+        mock_graph.invoke.return_value = {"response": result, "dependencies": []}
 
         with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
-            with patch("codesherpa.web.build_query_graph", return_value=mock_graph):
+            with patch("codesherpa.web.build_navigation_graph", return_value=mock_graph):
                 client.post(
                     "/api/projects/1/ask",
                     json={"question": "What does this file do?", "active_file": "src/main.py"},
@@ -637,10 +637,10 @@ class TestAskWithMemoryRouting:
         result = ExplanationResult(explanation="routed answer", sources=[])
 
         mock_graph = MagicMock()
-        mock_graph.invoke.return_value = {"response": result}
+        mock_graph.invoke.return_value = {"response": result, "dependencies": []}
 
         with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
-            with patch("codesherpa.web.build_query_graph", return_value=mock_graph):
+            with patch("codesherpa.web.build_navigation_graph", return_value=mock_graph):
                 resp = client.post(
                     "/api/projects/1/ask",
                     json={"question": "What does f do?"},

@@ -10,7 +10,7 @@
 | [x] 06 | Project management: named projects, isolation, metadata, incremental re-ingestion | [task-06-project-management.md](../specs/task-06-project-management.md) | REQ-1, REQ-2 |
 | [x] 07 | Web interface: auto-launch, query panel, file tree, code display, loading state | [task-07-web-interface.md](../specs/task-07-web-interface.md) | REQ-1, REQ-8 |
 | [x] 08 | Agent memory: episodic + semantic memory, LangGraph memory-aware routing | [task-08-agent-memory.md](../specs/task-08-agent-memory.md) | REQ-7 |
-| [ ] 09 | Intelligent navigation: multi-step retrieval, follow-ups, exploration planning, map query | [task-09-intelligent-navigation.md](../specs/task-09-intelligent-navigation.md) | REQ-6 |
+| [x] 09 | Intelligent navigation: multi-step retrieval, follow-ups, exploration planning, map query | [task-09-intelligent-navigation.md](../specs/task-09-intelligent-navigation.md) | REQ-6 |
 | [x] 10 | Ingestion progress API: project creation endpoint, SSE ingestion streaming, progress callback | [task-10-ingestion-progress-api.md](../specs/task-10-ingestion-progress-api.md) | REQ-WEB-02 to 16 |
 | [ ] 11 | Projects page: project list, create form, ingest/re-ingest with progress, navigation | [task-11-projects-page.md](../specs/task-11-projects-page.md) | REQ-WEB-01 to 19 |
 

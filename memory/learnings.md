@@ -56,6 +56,15 @@
 - Web API memory endpoints: `GET .../memory/exploration`, `GET/POST .../memory/semantic`, `DELETE .../memory/semantic/{id}`.
 - When updating the ask endpoint behavior, existing test_web.py tests for `/ask` need to mock `build_query_graph` instead of `explain`.
 
+## Navigation
+- `codesherpa/navigation.py` has `build_navigation_graph()` which replaces `build_query_graph()` from routing.py for the web API.
+- NavigationState extends QueryState with: conversation_history, query_type, dependencies.
+- Query types: map, follow_up, exploration, specific. Classified by `classify_query()` node.
+- `extract_dependencies()` uses regex to find imports, function calls, and class inheritance from code chunks.
+- The `/api/projects/{id}/ask` endpoint now returns `dependencies` list alongside `explanation` and `sources`.
+- The ask endpoint accepts optional `conversation_history` (list of dicts with query/summary/files) for follow-up context.
+- `routing.py` still exists and works independently (used by CLI) but web.py now uses navigation.py.
+
 ## Retrieval
 - `codesherpa/retrieval.py` has `vector_search()`, `fulltext_search()`, and `hybrid_search()` returning `SearchResult` dataclass instances.
 - Vector search uses `(1 - VECTOR_DISTANCE(embedding, :vec, COSINE))` for cosine similarity (Oracle returns distance, not similarity).

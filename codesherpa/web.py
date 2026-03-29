@@ -20,6 +20,7 @@ from codesherpa.memory import (
     list_semantic_memories,
     store_semantic_memory,
 )
+from codesherpa.navigation import build_navigation_graph
 from codesherpa.parser import walk_directory
 from codesherpa.project import (
     ProjectExistsError,
@@ -31,7 +32,6 @@ from codesherpa.project import (
 )
 from codesherpa.repo import RepoError, resolve_source
 from codesherpa.retrieval import hybrid_search
-from codesherpa.routing import build_query_graph
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ def _lob_output_handler(cursor, metadata):
 class QuestionRequest(BaseModel):
     question: str
     active_file: str | None = None
+    conversation_history: list[dict] | None = None
 
 
 class CreateProjectRequest(BaseModel):
@@ -230,24 +231,31 @@ def create_app(
                     f"Question: {question}"
                 )
 
+        history = req.conversation_history or []
+
         try:
-            graph = build_query_graph()
+            graph = build_navigation_graph()
             graph_result = graph.invoke({
                 "query": question,
                 "project_id": project_id,
                 "conn": conn,
                 "embedder": loader.embedder,
                 "llm": loader.llm,
+                "conversation_history": history,
+                "query_type": "",
+                "response": None,
+                "dependencies": [],
+                "explored_files": [],
                 "episodic_memories": [],
                 "semantic_memories": [],
-                "response": None,
-                "explored_files": [],
             })
             result = graph_result["response"]
+            dependencies = graph_result.get("dependencies", [])
         except Exception:
-            logger.exception("Memory-aware query failed, falling back to direct explain")
+            logger.exception("Navigation query failed, falling back to direct explain")
             from codesherpa.explanation import explain
             result = explain(conn, loader.embedder, loader.llm, question, project_id=project_id)
+            dependencies = []
 
         return {
             "explanation": result.explanation,
@@ -263,6 +271,7 @@ def create_app(
                 }
                 for s in result.sources
             ],
+            "dependencies": dependencies,
         }
 
     @app.post("/api/projects/{project_id}/query")
