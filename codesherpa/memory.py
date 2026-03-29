@@ -18,6 +18,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _lob_output_handler(cursor, metadata):
+    """Convert CLOB columns to strings so they're JSON-serializable."""
+    if metadata.type_code is oracledb.DB_TYPE_CLOB:
+        return cursor.var(oracledb.DB_TYPE_LONG, arraysize=cursor.arraysize)
+
 EPISODIC_TABLE = "EPISODIC_MEMORY"
 SEMANTIC_TABLE = "SEMANTIC_MEMORY"
 
@@ -164,6 +170,7 @@ def search_episodic_memory(
 
     try:
         with conn.cursor() as cursor:
+            cursor.outputtypehandler = _lob_output_handler
             cursor.setinputsizes(
                 oracledb.DB_TYPE_VECTOR, None, oracledb.DB_TYPE_VECTOR,
             )
@@ -222,6 +229,7 @@ def search_semantic_memory(
 
     try:
         with conn.cursor() as cursor:
+            cursor.outputtypehandler = _lob_output_handler
             cursor.setinputsizes(
                 oracledb.DB_TYPE_VECTOR, None, oracledb.DB_TYPE_VECTOR,
             )
@@ -243,6 +251,64 @@ def search_semantic_memory(
     ]
 
 
+def search_semantic_memory_broad(
+    conn: oracledb.Connection,
+    embedder: CodeRankEmbedder,
+    query: str,
+    project_id: int,
+    top_k: int = 10,
+    threshold: float = 0.1,
+) -> list[dict]:
+    """Search semantic memory using both vector similarity and keyword matching.
+
+    The code embedding model has low sensitivity to natural-language queries,
+    so we combine vector search with keyword-based matching to ensure
+    developer-provided context is found even when the embedding model
+    produces low similarity scores.
+
+    Returns:
+        List of dicts with id, content, score — deduplicated, sorted by score.
+    """
+    results: dict[int, dict] = {}
+
+    # 1. Vector search
+    try:
+        for mem in search_semantic_memory(
+            conn, embedder, query, project_id, top_k=top_k, threshold=threshold,
+        ):
+            results[mem["id"]] = mem
+    except Exception:
+        logger.warning("Semantic vector search failed", exc_info=True)
+
+    # 2. Keyword search — use same positional-param pattern as search_memory
+    words = [w for w in query.lower().split() if len(w) >= 3]
+    for word in words[:5]:
+        like_pattern = f"%{word}%"
+        try:
+            with conn.cursor() as cursor:
+                cursor.outputtypehandler = _lob_output_handler
+                cursor.execute(
+                    f"SELECT id, content FROM {SEMANTIC_TABLE} "
+                    f"WHERE project_id = :1 AND LOWER(content) LIKE :2 "
+                    f"FETCH FIRST :3 ROWS ONLY",
+                    [project_id, like_pattern, top_k],
+                )
+                for row in cursor.fetchall():
+                    if row[0] not in results:
+                        results[row[0]] = {
+                            "id": row[0],
+                            "content": row[1],
+                            "score": 0.0,
+                        }
+        except Exception:
+            logger.warning(
+                "Semantic keyword search failed for word=%s", word,
+                exc_info=True,
+            )
+
+    return sorted(results.values(), key=lambda r: r["score"], reverse=True)[:top_k]
+
+
 def get_exploration_summary(
     conn: oracledb.Connection,
     project_id: int,
@@ -253,6 +319,7 @@ def get_exploration_summary(
         Dict with 'explored_files' (deduplicated list) and 'queries' (list of past queries).
     """
     with conn.cursor() as cursor:
+        cursor.outputtypehandler = _lob_output_handler
         cursor.execute(
             f"SELECT query, file_paths FROM {EPISODIC_TABLE} "
             f"WHERE project_id = :1 ORDER BY created_at",
@@ -284,6 +351,7 @@ def list_semantic_memories(
         List of dicts with id, content, created_at.
     """
     with conn.cursor() as cursor:
+        cursor.outputtypehandler = _lob_output_handler
         cursor.execute(
             f"SELECT id, content, created_at FROM {SEMANTIC_TABLE} "
             f"WHERE project_id = :1 ORDER BY created_at",
@@ -325,6 +393,7 @@ def list_episodic_memories(
         List of dicts with id, query, file_paths, summary, created_at.
     """
     with conn.cursor() as cursor:
+        cursor.outputtypehandler = _lob_output_handler
         cursor.execute(
             f"SELECT id, query, file_paths, summary, created_at FROM {EPISODIC_TABLE} "
             f"WHERE project_id = :1 ORDER BY created_at",
@@ -440,6 +509,7 @@ def search_memory(
     # 1. Episodic vector search
     try:
         with conn.cursor() as cursor:
+            cursor.outputtypehandler = _lob_output_handler
             cursor.setinputsizes(
                 oracledb.DB_TYPE_VECTOR, None, oracledb.DB_TYPE_VECTOR,
             )
@@ -469,6 +539,7 @@ def search_memory(
     # 2. Semantic vector search
     try:
         with conn.cursor() as cursor:
+            cursor.outputtypehandler = _lob_output_handler
             cursor.setinputsizes(
                 oracledb.DB_TYPE_VECTOR, None, oracledb.DB_TYPE_VECTOR,
             )
@@ -497,6 +568,7 @@ def search_memory(
     try:
         like_pattern = f"%{query}%"
         with conn.cursor() as cursor:
+            cursor.outputtypehandler = _lob_output_handler
             cursor.execute(
                 f"""SELECT id, query, file_paths, summary
                     FROM {EPISODIC_TABLE}
@@ -523,6 +595,7 @@ def search_memory(
     try:
         like_pattern = f"%{query}%"
         with conn.cursor() as cursor:
+            cursor.outputtypehandler = _lob_output_handler
             cursor.execute(
                 f"""SELECT id, content
                     FROM {SEMANTIC_TABLE}

@@ -17,12 +17,28 @@ from langgraph.graph import END, StateGraph
 from codesherpa.explanation import ExplanationResult, _format_context, explain
 from codesherpa.memory import (
     search_episodic_memory,
-    search_semantic_memory,
+    search_semantic_memory_broad,
     store_episodic_memory,
 )
 from codesherpa.retrieval import hybrid_search
 
 logger = logging.getLogger(__name__)
+
+
+def _to_str(content: object) -> str:
+    """Normalise LLM response content to a plain string."""
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and "text" in part:
+                parts.append(part["text"])
+            else:
+                parts.append(str(part))
+        return "\n".join(parts)
+    if isinstance(content, dict) and "text" in content:
+        return content["text"]
+    return str(content) if content else ""
+
 
 CONTEXT_SYSTEM_PROMPT = """\
 You are CodeSherpa, an AI assistant that explains code in plain language.
@@ -55,15 +71,32 @@ class QueryState(TypedDict):
 
 
 def check_memory(state: QueryState) -> dict:
-    """Check memory for relevant prior context."""
-    episodic = search_episodic_memory(
-        state["conn"], state["embedder"], state["query"],
-        project_id=state["project_id"],
-    )
-    semantic = search_semantic_memory(
-        state["conn"], state["embedder"], state["query"],
-        project_id=state["project_id"],
-    )
+    """Check memory for relevant prior context.
+
+    Episodic memories are searched by vector similarity.
+    Semantic memories use broad search (vector + keyword matching) because
+    the code embedding model has low sensitivity to natural-language notes.
+
+    Catches all exceptions so that a memory failure never crashes the graph.
+    """
+    episodic: list[dict] = []
+    semantic: list[dict] = []
+
+    try:
+        episodic = search_episodic_memory(
+            state["conn"], state["embedder"], state["query"],
+            project_id=state["project_id"],
+        )
+    except Exception:
+        logger.warning("Episodic memory search failed", exc_info=True)
+
+    try:
+        semantic = search_semantic_memory_broad(
+            state["conn"], state["embedder"], state["query"],
+            project_id=state["project_id"],
+        )
+    except Exception:
+        logger.warning("Semantic memory search failed", exc_info=True)
 
     return {
         "episodic_memories": episodic,
@@ -127,7 +160,7 @@ def explain_with_context(state: QueryState) -> dict:
 
     return {
         "response": ExplanationResult(
-            explanation=response.content,
+            explanation=_to_str(response.content),
             sources=chunks,
         ),
         "explored_files": explored_files,
@@ -153,7 +186,8 @@ def update_memory(state: QueryState) -> dict:
     if state["response"] is None:
         return {}
 
-    summary = state["response"].explanation[:200]
+    explanation = _to_str(state["response"].explanation)
+    summary = explanation[:200]
     file_paths = list(dict.fromkeys(state["explored_files"]))
 
     store_episodic_memory(

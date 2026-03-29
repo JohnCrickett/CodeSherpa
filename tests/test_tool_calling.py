@@ -303,7 +303,7 @@ class TestToolCallingGraphIntegration:
         graph = build_navigation_graph()
 
         with patch("codesherpa.navigation.search_episodic_memory", return_value=[]):
-            with patch("codesherpa.navigation.search_semantic_memory", return_value=[]):
+            with patch("codesherpa.navigation.search_semantic_memory_broad", return_value=[]):
                 with patch("codesherpa.navigation.store_episodic_memory"):
                     result = graph.invoke(state)
 
@@ -330,7 +330,7 @@ class TestToolCallingGraphIntegration:
         graph = build_navigation_graph()
 
         with patch("codesherpa.navigation.search_episodic_memory", return_value=[]):
-            with patch("codesherpa.navigation.search_semantic_memory", return_value=[]):
+            with patch("codesherpa.navigation.search_semantic_memory_broad", return_value=[]):
                 with patch("codesherpa.navigation.store_episodic_memory"):
                     result = graph.invoke(state)
 
@@ -358,7 +358,7 @@ class TestToolCallingGraphIntegration:
         graph = build_navigation_graph()
 
         with patch("codesherpa.navigation.search_episodic_memory", return_value=[]):
-            with patch("codesherpa.navigation.search_semantic_memory", return_value=[]):
+            with patch("codesherpa.navigation.search_semantic_memory_broad", return_value=[]):
                 with patch("codesherpa.navigation.store_episodic_memory"):
                     result = graph.invoke(state)
 
@@ -381,7 +381,7 @@ class TestToolCallingGraphIntegration:
         state = _base_state(query="what does f do?", llm=mock_llm)
 
         with patch("codesherpa.navigation.search_episodic_memory", return_value=[]):
-            with patch("codesherpa.navigation.search_semantic_memory", return_value=[]):
+            with patch("codesherpa.navigation.search_semantic_memory_broad", return_value=[]):
                 with patch("codesherpa.navigation.store_episodic_memory"):
                     with patch("codesherpa.navigation.explain") as mock_explain:
                         from codesherpa.explanation import ExplanationResult

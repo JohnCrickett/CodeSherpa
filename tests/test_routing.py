@@ -49,7 +49,7 @@ class TestCheckMemory:
         state = _base_state()
 
         with patch("codesherpa.routing.search_episodic_memory", return_value=memories):
-            with patch("codesherpa.routing.search_semantic_memory", return_value=[]):
+            with patch("codesherpa.routing.search_semantic_memory_broad", return_value=[]):
                 result = check_memory(state)
 
         assert len(result["episodic_memories"]) == 1
@@ -61,7 +61,7 @@ class TestCheckMemory:
         state = _base_state()
 
         with patch("codesherpa.routing.search_episodic_memory", return_value=[]):
-            with patch("codesherpa.routing.search_semantic_memory", return_value=context):
+            with patch("codesherpa.routing.search_semantic_memory_broad", return_value=context):
                 result = check_memory(state)
 
         assert len(result["semantic_memories"]) == 1
@@ -223,7 +223,7 @@ class TestBuildQueryGraph:
         graph = build_query_graph()
 
         with patch("codesherpa.routing.search_episodic_memory", return_value=[]):
-            with patch("codesherpa.routing.search_semantic_memory", return_value=[]):
+            with patch("codesherpa.routing.search_semantic_memory_broad", return_value=[]):
                 with patch("codesherpa.routing.explain", return_value=expected):
                     with patch("codesherpa.routing.store_episodic_memory"):
                         result = graph.invoke(state)
@@ -244,7 +244,7 @@ class TestBuildQueryGraph:
         graph = build_query_graph()
 
         with patch("codesherpa.routing.search_episodic_memory", return_value=episodic):
-            with patch("codesherpa.routing.search_semantic_memory", return_value=[]):
+            with patch("codesherpa.routing.search_semantic_memory_broad", return_value=[]):
                 with patch(
                     "codesherpa.routing.hybrid_search",
                     return_value=[_make_search_result()],

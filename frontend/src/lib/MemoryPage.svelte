@@ -406,6 +406,9 @@
               </Button>
             {/if}
           </div>
+          <p class="text-xs text-muted-foreground">
+            Automatically recorded when you ask questions. Tracks which areas of the codebase have been explored so the assistant can build on prior context.
+          </p>
         </Card.Header>
         <Card.Content>
           {#if bulkConfirm === "episodic"}
@@ -483,6 +486,9 @@
               </Button>
             {/if}
           </div>
+          <p class="text-xs text-muted-foreground">
+            Developer-provided project context. Add notes about architecture, conventions, or domain knowledge to help the assistant give more relevant answers.
+          </p>
         </Card.Header>
         <Card.Content>
           {#if bulkConfirm === "semantic"}

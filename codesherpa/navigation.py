@@ -21,7 +21,7 @@ from codesherpa.explanation import ExplanationResult, _format_context, explain
 from codesherpa.ingestion import TABLE_NAME
 from codesherpa.memory import (
     search_episodic_memory,
-    search_semantic_memory,
+    search_semantic_memory_broad,
     store_episodic_memory,
 )
 from codesherpa.retrieval import hybrid_search
@@ -109,6 +109,26 @@ class NavigationState(TypedDict):
     progress_callback: Callable[[dict], None] | None
 
 
+def _to_str(content: object) -> str:
+    """Normalise LLM response content to a plain string.
+
+    Some models (e.g. Gemini) return content as a list of dicts like
+    ``[{"type": "text", "text": "...", "extras": {...}}]`` instead of
+    a single string.
+    """
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and "text" in part:
+                parts.append(part["text"])
+            else:
+                parts.append(str(part))
+        return "\n".join(parts)
+    if isinstance(content, dict) and "text" in content:
+        return content["text"]
+    return str(content) if content else ""
+
+
 def _emit_progress(state: NavigationState, step: str, detail: str = "") -> None:
     """Emit a progress event if a callback is configured."""
     cb = state.get("progress_callback")
@@ -191,15 +211,37 @@ def _auto_read_key_files(
 
 
 def check_memory(state: NavigationState) -> dict:
-    """Check memory for relevant prior context."""
+    """Check memory for relevant prior context.
+
+    Episodic memories are searched by vector similarity.
+    Semantic memories use broad search (vector + keyword matching) because
+    the code embedding model has low sensitivity to natural-language notes.
+
+    Catches all exceptions so that a memory failure never crashes the graph.
+    """
     _emit_progress(state, "Checking memory...")
-    episodic = search_episodic_memory(
-        state["conn"], state["embedder"], state["query"],
-        project_id=state["project_id"],
-    )
-    semantic = search_semantic_memory(
-        state["conn"], state["embedder"], state["query"],
-        project_id=state["project_id"],
+    episodic: list[dict] = []
+    semantic: list[dict] = []
+
+    try:
+        episodic = search_episodic_memory(
+            state["conn"], state["embedder"], state["query"],
+            project_id=state["project_id"],
+        )
+    except Exception:
+        logger.warning("Episodic memory search failed", exc_info=True)
+
+    try:
+        semantic = search_semantic_memory_broad(
+            state["conn"], state["embedder"], state["query"],
+            project_id=state["project_id"],
+        )
+    except Exception:
+        logger.warning("Semantic memory search failed", exc_info=True)
+
+    _emit_progress(
+        state, "Memory check complete",
+        f"{len(episodic)} episodic, {len(semantic)} semantic",
     )
     return {
         "episodic_memories": episodic,
@@ -234,7 +276,7 @@ def classify_query(state: NavigationState) -> dict:
         HumanMessage(content=CLASSIFY_PROMPT.format(query=query, history=history_text)),
     ]
     response = state["llm"].invoke(messages)
-    classification = response.content.strip().lower()
+    classification = _to_str(response.content).strip().lower()
 
     # Guard: follow_up is only valid when conversation history exists
     if "follow_up" in classification:
@@ -303,7 +345,7 @@ def handle_map_query(state: NavigationState) -> dict:
     response = state["llm"].invoke(messages)
 
     return {
-        "response": ExplanationResult(explanation=response.content, sources=[]),
+        "response": ExplanationResult(explanation=_to_str(response.content), sources=[]),
         "explored_files": [],
     }
 
@@ -557,8 +599,8 @@ def _format_history_context(history: list[dict]) -> str:
 TOOL_CALLING_SYSTEM_PROMPT = """\
 You are CodeSherpa, an AI assistant that explains code in plain language.
 
-You have access to tools to explore a codebase. You MUST use at least one tool
-before answering — never answer from memory alone.
+You have access to tools to explore a codebase. Use them to ground your answers
+in actual code.
 
 Available tools:
 - search_code: Search for code matching a query (semantic + full-text hybrid search)
@@ -566,16 +608,21 @@ Available tools:
 - list_files: List files matching a glob pattern (e.g. "*.py", "src/**/*.ts")
 
 Strategy:
-1. ALWAYS call at least one tool before answering. Start by searching for code \
-related to the question, or read key files (README, entry points, config files) \
-if the question is broad or about the project itself.
-2. If search results are insufficient, try reading specific files or listing files \
+1. Check if Memory context is provided below. Memory context contains notes \
+written by the developer about this project — it is AUTHORITATIVE and takes \
+priority over any inferences you might make from the code or file tree. Always \
+incorporate memory context into your answer.
+2. Use at least one tool to explore the codebase and support your answer with \
+specific code references.
+3. If search results are insufficient, try reading specific files or listing files \
 by pattern to find what you need.
-3. Once you have enough context, provide a clear, cited answer.
-4. Always cite specific file paths and function/class names in your answer.
+4. Combine memory context and tool results into a clear, cited answer.
 
 Rules:
-- NEVER answer without first using tools to explore the codebase.
+- Memory context is the developer's own description of the project. When it is \
+present, ALWAYS use it. Never contradict or ignore it.
+- Do NOT speculate about the project's purpose, motivation, or architecture when \
+memory context already addresses the question.
 - Explain code clearly, citing specific file paths and function/class names.
 - When explaining relationships between parts of the codebase, reference both sides.
 - If the provided context is insufficient to fully answer, say what you can determine
@@ -709,6 +756,18 @@ def tool_calling_agent(
     # Build initial messages
     prompt_parts = [TOOL_CALLING_SYSTEM_PROMPT]
 
+    # Add memory context FIRST — developer-provided notes take priority
+    if state["episodic_memories"] or state["semantic_memories"]:
+        memory_ctx = _format_memory_context(
+            state["episodic_memories"], state["semantic_memories"],
+        )
+        prompt_parts.append(f"Memory context:\n{memory_ctx}")
+
+    # Add conversation history for follow-ups
+    if state.get("conversation_history"):
+        history_ctx = _format_history_context(state["conversation_history"])
+        prompt_parts.append(history_ctx)
+
     # Add file tree context
     file_tree = state.get("file_tree", [])
     if file_tree:
@@ -722,18 +781,6 @@ def tool_calling_agent(
         )
         if key_content:
             prompt_parts.append(key_content)
-
-    # Add memory context
-    if state["episodic_memories"] or state["semantic_memories"]:
-        memory_ctx = _format_memory_context(
-            state["episodic_memories"], state["semantic_memories"],
-        )
-        prompt_parts.append(f"Memory context:\n{memory_ctx}")
-
-    # Add conversation history for follow-ups
-    if state.get("conversation_history"):
-        history_ctx = _format_history_context(state["conversation_history"])
-        prompt_parts.append(history_ctx)
 
     messages: list = [
         SystemMessage(content="\n\n".join(prompt_parts)),
@@ -752,7 +799,7 @@ def tool_calling_agent(
         if not getattr(response, "tool_calls", None):
             return {
                 "response": ExplanationResult(
-                    explanation=response.content,
+                    explanation=_to_str(response.content),
                     sources=[],
                 ),
                 "dependencies": [],
@@ -780,11 +827,11 @@ def tool_calling_agent(
                 explored_files.append(tool_args["file_path"])
 
     # Iteration limit reached — use last response content
-    last_content = messages[-1].content if messages else ""
+    last_content = _to_str(messages[-1].content) if messages else ""
     # Find the last AI message for the answer
     for msg in reversed(messages):
         if isinstance(msg, AIMessage):
-            last_content = msg.content
+            last_content = _to_str(msg.content)
             break
 
     return {
@@ -843,6 +890,18 @@ def multi_step_retrieve(state: NavigationState) -> dict:
 
     prompt_parts = []
 
+    # Add memory context FIRST — developer-provided notes take priority
+    if state["episodic_memories"] or state["semantic_memories"]:
+        memory_ctx = _format_memory_context(
+            state["episodic_memories"], state["semantic_memories"],
+        )
+        prompt_parts.append(f"Memory context:\n{memory_ctx}")
+
+    # Add conversation history for follow-ups
+    if state["query_type"] == "follow_up" and state["conversation_history"]:
+        history_ctx = _format_history_context(state["conversation_history"])
+        prompt_parts.append(history_ctx)
+
     # Add file tree so the LLM knows the project structure
     file_tree = state.get("file_tree", [])
     if file_tree:
@@ -856,18 +915,6 @@ def multi_step_retrieve(state: NavigationState) -> dict:
         )
         if key_content:
             prompt_parts.append(key_content)
-
-    # Add memory context if available
-    if state["episodic_memories"] or state["semantic_memories"]:
-        memory_ctx = _format_memory_context(
-            state["episodic_memories"], state["semantic_memories"],
-        )
-        prompt_parts.append(f"Memory context:\n{memory_ctx}")
-
-    # Add conversation history for follow-ups
-    if state["query_type"] == "follow_up" and state["conversation_history"]:
-        history_ctx = _format_history_context(state["conversation_history"])
-        prompt_parts.append(history_ctx)
 
     prompt_parts.append(f"Retrieved code context:\n\n{code_context}")
     prompt_parts.append(f"Question: {query}")
@@ -883,7 +930,7 @@ def multi_step_retrieve(state: NavigationState) -> dict:
 
     return {
         "response": ExplanationResult(
-            explanation=response.content,
+            explanation=_to_str(response.content),
             sources=all_chunks,
         ),
         "dependencies": deps,
@@ -910,7 +957,7 @@ def plan_exploration(state: NavigationState) -> dict:
         HumanMessage(content=EXPLORATION_PLAN_PROMPT.format(query=query)),
     ]
     plan_response = llm.invoke(plan_messages)
-    plan_text = plan_response.content
+    plan_text = _to_str(plan_response.content)
 
     # Parse numbered steps into search queries
     steps = re.findall(r"\d+\.\s*(.+)", plan_text)
@@ -967,7 +1014,7 @@ def plan_exploration(state: NavigationState) -> dict:
 
     return {
         "response": ExplanationResult(
-            explanation=synth_response.content,
+            explanation=_to_str(synth_response.content),
             sources=all_chunks,
         ),
         "dependencies": deps,
@@ -980,7 +1027,7 @@ def update_memory(state: NavigationState) -> dict:
     if state["response"] is None:
         return {}
 
-    explanation = state["response"].explanation or ""
+    explanation = _to_str(state["response"].explanation)
     if not explanation.strip():
         return {}
 

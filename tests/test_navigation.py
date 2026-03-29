@@ -338,7 +338,7 @@ class TestBuildNavigationGraph:
         graph = build_navigation_graph()
 
         with patch("codesherpa.navigation.search_episodic_memory", return_value=[]):
-            with patch("codesherpa.navigation.search_semantic_memory", return_value=[]):
+            with patch("codesherpa.navigation.search_semantic_memory_broad", return_value=[]):
                 with patch("codesherpa.navigation.store_episodic_memory"):
                     result = graph.invoke(state)
 
@@ -364,7 +364,7 @@ class TestBuildNavigationGraph:
         graph = build_navigation_graph()
 
         with patch("codesherpa.navigation.search_episodic_memory", return_value=[]):
-            with patch("codesherpa.navigation.search_semantic_memory", return_value=[]):
+            with patch("codesherpa.navigation.search_semantic_memory_broad", return_value=[]):
                 with patch("codesherpa.navigation.hybrid_search", return_value=[
                     _make_search_result("cli.py", "def main(): parse()")
                 ]):
@@ -387,7 +387,7 @@ class TestBuildNavigationGraph:
         graph = build_navigation_graph()
 
         with patch("codesherpa.navigation.search_episodic_memory", return_value=[]):
-            with patch("codesherpa.navigation.search_semantic_memory", return_value=[]):
+            with patch("codesherpa.navigation.search_semantic_memory_broad", return_value=[]):
                 with patch("codesherpa.navigation.hybrid_search", return_value=[
                     _make_search_result("parser.py", "def parse_codebase(): ...")
                 ]):
@@ -413,7 +413,7 @@ class TestBuildNavigationGraph:
         graph = build_navigation_graph()
 
         with patch("codesherpa.navigation.search_episodic_memory", return_value=[]):
-            with patch("codesherpa.navigation.search_semantic_memory", return_value=[]):
+            with patch("codesherpa.navigation.search_semantic_memory_broad", return_value=[]):
                 with patch("codesherpa.navigation.hybrid_search", return_value=[
                     _make_search_result("auth.py", "def authenticate(): ...")
                 ]):
