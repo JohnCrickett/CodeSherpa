@@ -31,7 +31,16 @@ SUPPORTED_EXTENSIONS: dict[str, str] = {
     ".sc": "scala",
     ".php": "php",
     ".lua": "lua",
+    # Documentation files
+    ".md": "markdown",
+    ".rst": "rst",
 }
+
+# Extensions treated as documentation (parsed as whole-file document chunks)
+_DOC_EXTENSIONS = {".md", ".rst"}
+
+# Maximum characters per document chunk (prevents OOM on large files)
+_MAX_DOC_CHUNK_CHARS = 50000
 
 SKIP_DIRS = {
     ".git",
@@ -411,6 +420,20 @@ def parse_file(file_path: str, root: str) -> list[CodeChunk]:
 
     if not source.strip():
         return []
+
+    # Documentation files: ingest as a single document chunk
+    if ext in _DOC_EXTENSIONS:
+        text = source[:_MAX_DOC_CHUNK_CHARS]
+        return [
+            CodeChunk(
+                content=text,
+                file_path=rel_path,
+                chunk_type="document",
+                language=language,
+                start_char=0,
+                end_char=len(text),
+            ),
+        ]
 
     if language == "python":
         return _parse_python(source, rel_path)

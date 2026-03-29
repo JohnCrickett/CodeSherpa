@@ -3,12 +3,14 @@
 from unittest.mock import MagicMock, patch
 
 from codesherpa.navigation import (
+    _auto_read_key_files,
     build_navigation_graph,
     classify_query,
     extract_dependencies,
     handle_map_query,
     multi_step_retrieve,
     plan_exploration,
+    read_file_from_db,
 )
 from codesherpa.retrieval import SearchResult
 
@@ -35,6 +37,8 @@ def _base_state(**overrides):
         "explored_files": [],
         "episodic_memories": [],
         "semantic_memories": [],
+        "file_tree": ["src/main.py", "src/utils.py"],
+        "progress_callback": None,
     }
     state.update(overrides)
     return state
@@ -377,3 +381,134 @@ class TestBuildNavigationGraph:
 
         assert result["query_type"] == "exploration"
         assert result["response"] is not None
+
+
+class TestReadFileFromDb:
+    """Tests for reading file contents from the database."""
+
+    def test_returns_file_contents(self):
+        """read_file_from_db returns concatenated code chunks."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(
+            return_value=mock_cursor,
+        )
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = [
+            ("def foo(): pass",),
+            ("def bar(): pass",),
+        ]
+
+        result = read_file_from_db(mock_conn, 1, "src/main.py")
+        assert "def foo(): pass" in result
+        assert "def bar(): pass" in result
+
+    def test_returns_not_found_message(self):
+        """read_file_from_db returns a message when file not found."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(
+            return_value=mock_cursor,
+        )
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = []
+
+        result = read_file_from_db(mock_conn, 1, "nonexistent.py")
+        assert "not found" in result.lower()
+
+
+class TestAutoReadKeyFiles:
+    """Tests for proactively reading key project files."""
+
+    def test_reads_readme(self):
+        """README.md is identified and read as a key file."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(
+            return_value=mock_cursor,
+        )
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = [
+            ("# My Project\nThis does XYZ.",),
+        ]
+
+        file_tree = ["README.md", "src/main.py", "src/utils.py"]
+        result = _auto_read_key_files(mock_conn, 1, file_tree)
+        assert "My Project" in result
+        assert "README.md" in result
+
+    def test_reads_entry_points(self):
+        """Entry point files (main.py, app.py) are identified."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(
+            return_value=mock_cursor,
+        )
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = [("def main(): ...",)]
+
+        file_tree = ["src/main.py", "src/utils.py", "tests/test_main.py"]
+        result = _auto_read_key_files(mock_conn, 1, file_tree)
+        assert "main.py" in result
+
+    def test_returns_empty_for_no_key_files(self):
+        """Returns empty string when no key files found."""
+        mock_conn = MagicMock()
+        file_tree = ["src/utils.py", "src/helpers.py"]
+        result = _auto_read_key_files(mock_conn, 1, file_tree)
+        assert result == ""
+
+
+class TestFileTreeInPrompts:
+    """Tests that file tree context is included in LLM prompts."""
+
+    def test_multi_step_retrieve_includes_file_tree(self):
+        """multi_step_retrieve includes the file tree in the LLM prompt."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(
+            content="Explanation of the code",
+        )
+
+        state = _base_state(
+            query="what does main do?",
+            llm=mock_llm,
+            query_type="specific",
+            file_tree=["src/main.py", "src/utils.py", "tests/test_main.py"],
+        )
+
+        with patch("codesherpa.navigation.hybrid_search", return_value=[
+            _make_search_result("src/main.py", "def main(): ..."),
+        ]):
+            multi_step_retrieve(state)
+
+        # Check that file tree was included in the LLM prompt
+        call_args = mock_llm.invoke.call_args[0][0]
+        prompt_text = " ".join(str(m.content) for m in call_args)
+        assert "src/main.py" in prompt_text
+        assert "src/utils.py" in prompt_text
+
+    def test_plan_exploration_includes_file_tree(self):
+        """plan_exploration includes the file tree in the LLM prompt."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = [
+            MagicMock(content="1. Check main module"),
+            MagicMock(content="The system works by..."),
+        ]
+
+        state = _base_state(
+            query="how does the system work?",
+            llm=mock_llm,
+            query_type="exploration",
+            file_tree=["app/server.py", "app/routes.py"],
+        )
+
+        with patch("codesherpa.navigation.hybrid_search", return_value=[
+            _make_search_result("app/server.py", "app = Flask(__name__)"),
+        ]):
+            plan_exploration(state)
+
+        # The synthesis call (second invoke) should include file tree
+        synth_call = mock_llm.invoke.call_args_list[-1][0][0]
+        prompt_text = " ".join(str(m.content) for m in synth_call)
+        assert "app/server.py" in prompt_text
+        assert "app/routes.py" in prompt_text

@@ -1,5 +1,6 @@
 """Tests for the FastAPI web interface backend."""
 
+import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +20,16 @@ def _make_search_result(code="def f(): pass", path="a.py", chunk_type="function"
         end_char=len(code),
         score=0.85,
     )
+
+
+def _parse_sse_response(resp):
+    """Parse an SSE response and return the final 'done' event data."""
+    for line in resp.text.splitlines():
+        if line.startswith("data: "):
+            event = json.loads(line[6:])
+            if event.get("phase") == "done":
+                return event
+    return None
 
 
 @pytest.fixture
@@ -132,7 +143,8 @@ class TestAskEndpoint:
                 )
 
         assert resp.status_code == 200
-        data = resp.json()
+        data = _parse_sse_response(resp)
+        assert data is not None
         assert data["explanation"] == "f is a function"
         assert len(data["sources"]) == 1
         assert data["sources"][0]["file_path"] == "a.py"
@@ -672,5 +684,33 @@ class TestAskWithMemoryRouting:
                 )
 
         assert resp.status_code == 200
-        data = resp.json()
+        data = _parse_sse_response(resp)
+        assert data is not None
         assert data["explanation"] == "routed answer"
+
+    def test_conversation_history_forwarded_to_graph(self, client, mock_conn):
+        """conversation_history from the request body is passed to the navigation graph."""
+        from codesherpa.explanation import ExplanationResult
+
+        result = ExplanationResult(explanation="follow-up answer", sources=[])
+
+        mock_graph = MagicMock()
+        mock_graph.invoke.return_value = {"response": result, "dependencies": []}
+
+        history = [
+            {"query": "What does main() do?", "summary": "Explains main", "files": ["main.py"]},
+        ]
+
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.build_navigation_graph", return_value=mock_graph):
+                resp = client.post(
+                    "/api/projects/1/ask",
+                    json={
+                        "question": "How does it handle errors?",
+                        "conversation_history": history,
+                    },
+                )
+
+        assert resp.status_code == 200
+        graph_call = mock_graph.invoke.call_args[0][0]
+        assert graph_call["conversation_history"] == history

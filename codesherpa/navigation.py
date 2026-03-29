@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -39,11 +40,13 @@ Rules:
 - Explain code clearly, citing specific file paths and function/class names.
 - When explaining relationships between parts of the codebase, reference both sides.
 - When multiple implementations of a concept exist, mention all of them and explain differences.
-- Never speculate beyond what the retrieved code supports.
-- If the code context is insufficient to fully answer, explicitly state what you cannot determine.
+- If the provided context is insufficient to fully answer, say what you can determine \
+from the available code and note what is missing.
 - Keep explanations concise and accurate.
 - When you identify dependencies (imports, function calls, class inheritance), mention them
-  explicitly so the user can explore further."""
+  explicitly so the user can explore further.
+- You will be given the project file tree and key file contents. Use ALL provided context \
+to answer — do not say you cannot answer if context is present."""
 
 CLASSIFY_PROMPT = """\
 Classify the following user question about a codebase into exactly one category.
@@ -101,10 +104,88 @@ class NavigationState(TypedDict):
     explored_files: list[str]
     episodic_memories: list[dict]
     semantic_memories: list[dict]
+    file_tree: list[str]
+    progress_callback: Callable[[dict], None] | None
+
+
+def _emit_progress(state: NavigationState, step: str, detail: str = "") -> None:
+    """Emit a progress event if a callback is configured."""
+    cb = state.get("progress_callback")
+    if cb:
+        event: dict[str, str] = {"step": step}
+        if detail:
+            event["detail"] = detail
+        cb(event)
+
+
+def read_file_from_db(conn, project_id: int, file_path: str) -> str:
+    """Read the full contents of a file from the CODE_CHUNKS table."""
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"SELECT code_text FROM {TABLE_NAME} "
+            f"WHERE project_id = :1 AND file_path = :2 "
+            f"ORDER BY start_char",
+            [project_id, file_path],
+        )
+        rows = cursor.fetchall()
+    if not rows:
+        return f"File '{file_path}' not found in the project."
+    return "\n".join(str(row[0]) for row in rows)
+
+
+def _format_file_tree(file_tree: list[str]) -> str:
+    """Format the file tree into a string for the LLM prompt."""
+    if not file_tree:
+        return "No files in project."
+    return "Project files:\n" + "\n".join(f"  - {f}" for f in file_tree)
+
+
+# File basenames that indicate key project files worth reading proactively
+_KEY_FILE_PATTERNS = re.compile(
+    r"(^readme|^changelog|^contributing|^license)"
+    r"|"
+    r"(^main\.|^app\.|^index\.|^server\.|^cli\.)",
+    re.IGNORECASE,
+)
+
+_MAX_AUTO_READ_FILES = 5
+
+
+def _auto_read_key_files(
+    conn, project_id: int, file_tree: list[str],
+    progress_callback=None,
+) -> str:
+    """Read key project files (README, entry points) for broad context.
+
+    Called when search returns few/no results so the LLM still has
+    meaningful content to answer from.
+    """
+    key_files = []
+    for fp in file_tree:
+        basename = fp.rsplit("/", 1)[-1] if "/" in fp else fp
+        if _KEY_FILE_PATTERNS.search(basename):
+            key_files.append(fp)
+
+    if not key_files:
+        return ""
+
+    key_files = key_files[:_MAX_AUTO_READ_FILES]
+    parts = []
+    for fp in key_files:
+        if progress_callback:
+            progress_callback({"step": "Reading file...", "detail": fp})
+        content = read_file_from_db(conn, project_id, fp)
+        if content and "not found" not in content.lower():
+            parts.append(f"File: {fp}\n```\n{content}\n```")
+
+    if not parts:
+        return ""
+    return "Key project files:\n\n" + "\n\n".join(parts)
 
 
 def check_memory(state: NavigationState) -> dict:
     """Check memory for relevant prior context."""
+    _emit_progress(state, "Checking memory...")
     episodic = search_episodic_memory(
         state["conn"], state["embedder"], state["query"],
         project_id=state["project_id"],
@@ -121,6 +202,7 @@ def check_memory(state: NavigationState) -> dict:
 
 def classify_query(state: NavigationState) -> dict:
     """Classify the query into map, follow_up, exploration, or specific."""
+    _emit_progress(state, "Analyzing question...")
     query = state["query"].strip()
 
     # Map query: exact match
@@ -156,6 +238,7 @@ def route_by_type(state: NavigationState) -> str:
 
 def handle_map_query(state: NavigationState) -> dict:
     """Handle a 'map' query by summarising codebase structure from metadata."""
+    _emit_progress(state, "Building codebase map...")
     conn = state["conn"]
     project_id = state["project_id"]
 
@@ -311,6 +394,8 @@ def multi_step_retrieve(state: NavigationState) -> dict:
     project_id = state["project_id"]
 
     # Step 1: Initial retrieval
+    _emit_progress(state, "Searching codebase...")
+
     # For follow-ups, augment query with history context
     search_query = query
     if state["query_type"] == "follow_up" and state["conversation_history"]:
@@ -342,6 +427,20 @@ def multi_step_retrieve(state: NavigationState) -> dict:
 
     prompt_parts = []
 
+    # Add file tree so the LLM knows the project structure
+    file_tree = state.get("file_tree", [])
+    if file_tree:
+        prompt_parts.append(_format_file_tree(file_tree))
+
+    # Always include key project files (README, entry points) as context
+    if file_tree:
+        key_content = _auto_read_key_files(
+            conn, project_id, file_tree,
+            progress_callback=state.get("progress_callback"),
+        )
+        if key_content:
+            prompt_parts.append(key_content)
+
     # Add memory context if available
     if state["episodic_memories"] or state["semantic_memories"]:
         memory_ctx = _format_memory_context(
@@ -362,6 +461,7 @@ def multi_step_retrieve(state: NavigationState) -> dict:
         HumanMessage(content="\n\n".join(prompt_parts)),
     ]
 
+    _emit_progress(state, "Generating answer...")
     response = llm.invoke(messages)
     explored_files = list(dict.fromkeys(c.file_path for c in all_chunks))
 
@@ -389,6 +489,7 @@ def plan_exploration(state: NavigationState) -> dict:
     project_id = state["project_id"]
 
     # Step 1: Plan search steps
+    _emit_progress(state, "Planning exploration...")
     plan_messages = [
         HumanMessage(content=EXPLORATION_PLAN_PROMPT.format(query=query)),
     ]
@@ -401,6 +502,7 @@ def plan_exploration(state: NavigationState) -> dict:
         steps = [query]  # Fallback to original query
 
     # Step 2: Execute each search step and collect chunks
+    _emit_progress(state, "Searching codebase...")
     all_chunks = []
     existing_keys: set[tuple[str, int, int]] = set()
     for step_query in steps[:4]:  # Max 4 steps
@@ -414,16 +516,34 @@ def plan_exploration(state: NavigationState) -> dict:
     # Step 3: Synthesise walkthrough
     code_context = _format_context(all_chunks)
 
+    file_tree = state.get("file_tree", [])
+    file_tree_section = (
+        f"{_format_file_tree(file_tree)}\n\n" if file_tree else ""
+    )
+
+    # Always include key project files (README, entry points) as context
+    key_files_section = ""
+    if file_tree:
+        key_content = _auto_read_key_files(
+            conn, project_id, file_tree,
+            progress_callback=state.get("progress_callback"),
+        )
+        if key_content:
+            key_files_section = f"{key_content}\n\n"
+
     synth_messages = [
         SystemMessage(content=EXPLORATION_SYNTHESISE_PROMPT),
         HumanMessage(
             content=(
+                f"{file_tree_section}"
+                f"{key_files_section}"
                 f"Original question: {query}\n\n"
                 f"Exploration plan:\n{plan_text}\n\n"
                 f"Retrieved code:\n\n{code_context}"
             ),
         ),
     ]
+    _emit_progress(state, "Generating answer...")
     synth_response = llm.invoke(synth_messages)
 
     deps = extract_dependencies(all_chunks)
@@ -444,7 +564,11 @@ def update_memory(state: NavigationState) -> dict:
     if state["response"] is None:
         return {}
 
-    summary = state["response"].explanation[:200]
+    explanation = state["response"].explanation or ""
+    if not explanation.strip():
+        return {}
+
+    summary = explanation[:200]
     file_paths = list(dict.fromkeys(state["explored_files"]))
 
     store_episodic_memory(

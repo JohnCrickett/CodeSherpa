@@ -27,7 +27,11 @@ Rules:
 def _format_context(chunks: list[SearchResult]) -> str:
     """Format retrieved code chunks into a context string for the LLM."""
     if not chunks:
-        return "No relevant code was found in the codebase."
+        return (
+            "No code chunks were returned by search. "
+            "Use the project file tree and key file contents "
+            "provided above to answer the question."
+        )
 
     parts = []
     for chunk in chunks:

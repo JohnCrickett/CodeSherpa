@@ -45,8 +45,8 @@ def sample_tree(tmp_path):
     # Binary file (should be skipped)
     (tmp_path / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    # Non-source text file (should be skipped)
-    (tmp_path / "README.md").write_text("# README")
+    # Documentation file (should be included)
+    (tmp_path / "README.md").write_text("# My Project\n\nThis is a sample project.")
 
     return tmp_path
 
@@ -75,16 +75,21 @@ class TestWalkDirectory:
         for f in files:
             assert "__pycache__" not in f.split(os.sep)
 
-    def test_skips_non_source_files(self, sample_tree):
+    def test_skips_binary_files(self, sample_tree):
         files = walk_directory(str(sample_tree))
         extensions = {os.path.splitext(f)[1] for f in files}
-        assert ".md" not in extensions
         assert ".png" not in extensions
+
+    def test_includes_documentation_files(self, sample_tree):
+        files = walk_directory(str(sample_tree))
+        basenames = {os.path.basename(f) for f in files}
+        assert "README.md" in basenames
 
     def test_supports_multiple_languages(self, tmp_path):
         extensions = [
             ".py", ".js", ".ts", ".java", ".go", ".rs", ".c", ".cpp", ".rb",
             ".zig", ".cs", ".kt", ".swift", ".scala", ".php", ".lua",
+            ".md", ".rst",
         ]
         for ext in extensions:
             (tmp_path / f"file{ext}").write_text("// code")
@@ -243,6 +248,19 @@ class TestParseFile:
         assert any("add" in c.content for c in func_chunks)
         assert any("multiply" in c.content for c in func_chunks)
         assert chunks[0].language == "lua"
+
+    def test_markdown_file_parsed_as_document(self, tmp_path):
+        """Markdown files are parsed as a single document chunk."""
+        md_file = tmp_path / "README.md"
+        md_file.write_text(
+            "# My Project\n\nThis project does XYZ.\n\n"
+            "## Setup\n\nRun `npm install`.\n"
+        )
+        chunks = parse_file(str(md_file), str(tmp_path))
+        assert len(chunks) >= 1
+        assert chunks[0].language == "markdown"
+        assert chunks[0].chunk_type == "document"
+        assert "My Project" in chunks[0].content
 
     def test_go_top_level_code_captured(self, tmp_path):
         """Go files should capture package, imports, and type definitions as module chunk."""

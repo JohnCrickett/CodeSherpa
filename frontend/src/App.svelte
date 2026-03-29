@@ -4,7 +4,7 @@
   import type { Project } from "./lib/api";
   import CodeViewer from "./lib/CodeViewer.svelte";
   import FileTree from "./lib/FileTree.svelte";
-  import QueryPanel from "./lib/QueryPanel.svelte";
+  import ChatPanel from "./lib/ChatPanel.svelte";
   import ProjectsPage from "./lib/ProjectsPage.svelte";
   import * as Select from "$lib/components/ui/select";
   import { ScrollArea } from "$lib/components/ui/scroll-area";
@@ -56,6 +56,10 @@
 
   function handleFileSelect(path: string) {
     selectedFile = selectedFile === path ? null : path;
+  }
+
+  function closeCodeViewer() {
+    selectedFile = null;
   }
 
   function handleProjectChange(value: string | undefined) {
@@ -161,7 +165,7 @@
   {:else}
     <div class="flex flex-1 overflow-hidden">
       {#if selectedProject}
-        <!-- Sidebar -->
+        <!-- Left sidebar: File Tree -->
         <aside class="w-60 min-w-60 border-r">
           <ScrollArea class="h-full">
             <div class="p-2">
@@ -174,13 +178,25 @@
           </ScrollArea>
         </aside>
 
-        <!-- Content area -->
-        <main class="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
-          {#if selectedFile}
-            <CodeViewer projectId={selectedProject.id} filePath={selectedFile} {dark} />
-          {/if}
-          <QueryPanel projectId={selectedProject.id} {dark} activeFile={selectedFile} />
+        <!-- Center: Chat Panel -->
+        <main class="flex flex-1 flex-col overflow-hidden">
+          <ChatPanel projectId={selectedProject.id} {dark} activeFile={selectedFile} onFileSelect={handleFileSelect} />
         </main>
+
+        <!-- Right panel: Code Viewer (conditional) -->
+        {#if selectedFile}
+          <aside class="flex w-[480px] min-w-[320px] flex-col border-l">
+            <div class="flex h-10 shrink-0 items-center justify-between border-b px-3">
+              <span class="truncate text-xs font-medium">{selectedFile}</span>
+              <Button variant="ghost" size="icon" class="h-6 w-6" onclick={closeCodeViewer} aria-label="Close">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              </Button>
+            </div>
+            <div class="flex-1 overflow-y-auto p-3">
+              <CodeViewer projectId={selectedProject.id} filePath={selectedFile} {dark} />
+            </div>
+          </aside>
+        {/if}
       {/if}
     </div>
   {/if}

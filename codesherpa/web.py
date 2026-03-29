@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import queue
 import threading
 import webbrowser
 from collections.abc import Callable
@@ -236,46 +235,94 @@ def create_app(
 
         history = req.conversation_history or []
 
-        try:
-            graph = build_navigation_graph()
-            graph_result = graph.invoke({
-                "query": question,
-                "project_id": project_id,
-                "conn": conn,
-                "embedder": loader.embedder,
-                "llm": loader.llm,
-                "conversation_history": history,
-                "query_type": "",
-                "response": None,
-                "dependencies": [],
-                "explored_files": [],
-                "episodic_memories": [],
-                "semantic_memories": [],
-            })
-            result = graph_result["response"]
-            dependencies = graph_result.get("dependencies", [])
-        except Exception:
-            logger.exception("Navigation query failed, falling back to direct explain")
-            from codesherpa.explanation import explain
-            result = explain(conn, loader.embedder, loader.llm, question, project_id=project_id)
-            dependencies = []
+        # Fetch file tree for project context
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT DISTINCT file_path FROM CODE_CHUNKS "
+                "WHERE project_id = :1 ORDER BY file_path",
+                [project_id],
+            )
+            file_tree = [row[0] for row in cursor.fetchall()]
 
-        return {
-            "explanation": result.explanation,
-            "sources": [
-                {
-                    "code_text": s.code_text,
-                    "file_path": s.file_path,
-                    "chunk_type": s.chunk_type,
-                    "language": s.language,
-                    "start_char": s.start_char,
-                    "end_char": s.end_char,
-                    "score": s.score,
+        _SENTINEL = None
+
+        async def event_stream():
+            q: asyncio.Queue[dict | None] = asyncio.Queue()
+            loop = asyncio.get_event_loop()
+
+            def on_progress(event: dict) -> None:
+                loop.call_soon_threadsafe(q.put_nowait, event)
+
+            def run_ask() -> None:
+                try:
+                    graph = build_navigation_graph()
+                    graph_result = graph.invoke({
+                        "query": question,
+                        "project_id": project_id,
+                        "conn": conn,
+                        "embedder": loader.embedder,
+                        "llm": loader.llm,
+                        "conversation_history": history,
+                        "query_type": "",
+                        "response": None,
+                        "dependencies": [],
+                        "explored_files": [],
+                        "episodic_memories": [],
+                        "semantic_memories": [],
+                        "file_tree": file_tree,
+                        "progress_callback": on_progress,
+                    })
+                    result = graph_result["response"]
+                    dependencies = graph_result.get("dependencies", [])
+                except Exception:
+                    logger.exception("Navigation query failed, falling back")
+                    from codesherpa.explanation import explain
+                    result = explain(
+                        conn, loader.embedder, loader.llm,
+                        question, project_id=project_id,
+                    )
+                    dependencies = []
+
+                answer = {
+                    "phase": "done",
+                    "explanation": result.explanation,
+                    "sources": [
+                        {
+                            "code_text": s.code_text,
+                            "file_path": s.file_path,
+                            "chunk_type": s.chunk_type,
+                            "language": s.language,
+                            "start_char": s.start_char,
+                            "end_char": s.end_char,
+                            "score": s.score,
+                        }
+                        for s in result.sources
+                    ],
+                    "dependencies": dependencies,
                 }
-                for s in result.sources
-            ],
-            "dependencies": dependencies,
-        }
+                loop.call_soon_threadsafe(q.put_nowait, answer)
+                loop.call_soon_threadsafe(q.put_nowait, _SENTINEL)
+
+            threading.Thread(target=run_ask, daemon=True).start()
+
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=60)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if event is _SENTINEL:
+                    break
+                yield f"data: {json.dumps(event)}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.post("/api/projects/{project_id}/query")
     def api_query(project_id: int, req: QuestionRequest):
