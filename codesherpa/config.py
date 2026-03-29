@@ -56,6 +56,12 @@ def load_config(env_path: str = ".env") -> Config:
     raw_values = dotenv_values(env_path)
     values = {k: _resolve_env_refs(v) for k, v in raw_values.items() if v is not None}
 
+    # Environment variables override .env file values
+    for var in REQUIRED_VARS:
+        env_val = os.environ.get(var)
+        if env_val:
+            values[var] = env_val
+
     missing = [var for var in REQUIRED_VARS if not values.get(var)]
     if missing:
         raise MissingConfigError(

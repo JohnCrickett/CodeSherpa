@@ -38,6 +38,14 @@
 - CLI commands: `ingest` auto-creates project via `get_or_create_project()`; `query`/`ask` require `--project` flag; `project list`/`project delete` for management.
 - Existing CLI tests were updated to pass `--project` and `project_id` where required by the new interface.
 
+## Web Interface
+- Backend uses FastAPI (`codesherpa/web.py`) with `create_app(conn, embedder, llm)` factory pattern.
+- API endpoints: `GET /api/projects`, `GET /api/projects/{id}/files`, `POST /api/projects/{id}/ask`, `POST /api/projects/{id}/query`.
+- Frontend is Svelte 5 + TypeScript in `frontend/`, built with Vite. Build output goes to `frontend/dist/` and is served as static files by FastAPI.
+- CLI `serve` subcommand starts uvicorn, accepts `--host`, `--port`, `--no-browser` flags. Auto-opens browser after 1s delay.
+- npm cache on this machine has root-owned files; use `--cache "$TMPDIR/npm-cache"` when running npm install to work around it.
+- Frontend uses Svelte 5 runes (`$state`, `$derived`, `$effect`, `$props`) and snippets (`{#snippet}` / `{@render}`).
+
 ## Retrieval
 - `codesherpa/retrieval.py` has `vector_search()`, `fulltext_search()`, and `hybrid_search()` returning `SearchResult` dataclass instances.
 - Vector search uses `(1 - VECTOR_DISTANCE(embedding, :vec, COSINE))` for cosine similarity (Oracle returns distance, not similarity).

@@ -15,5 +15,29 @@ services:
       retries: 10
       start_period: 120s
 
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      ORACLE_DSN: oracle-db:1521/FREEPDB1
+      ORACLE_USER: codesherpa
+      ORACLE_PASSWORD: codesherpa
+    depends_on:
+      oracle-db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
 volumes:
   oracle-data:

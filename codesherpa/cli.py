@@ -58,6 +58,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Name of the project to query",
     )
 
+    # serve subcommand
+    serve_parser = subparsers.add_parser("serve", help="Launch web interface")
+    serve_parser.add_argument(
+        "--host", default="127.0.0.1",
+        help="Host to bind the web server to (default: 127.0.0.1)",
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=8000,
+        help="Port to bind the web server to (default: 8000)",
+    )
+    serve_parser.add_argument(
+        "--no-browser", action="store_true",
+        help="Do not open the browser automatically",
+    )
+
     # project subcommand group
     project_parser = subparsers.add_parser("project", help="Manage projects")
     project_sub = project_parser.add_subparsers(dest="project_command", required=True)
@@ -250,5 +265,24 @@ def main(argv: list[str] | None = None) -> None:
                 except ProjectNotFoundError as exc:
                     print(f"Project error: {exc}", file=sys.stderr)
                     sys.exit(1)
+
+        elif args.command == "serve":
+            import threading
+
+            import uvicorn
+
+            from codesherpa.web import create_app, open_browser
+
+            print("Loading embedding model...")
+            embedder = CodeRankEmbedder()
+            llm = get_llm(api_key=config.llm_api_key, model=config.llm_model)
+            app = create_app(conn=conn, embedder=embedder, llm=llm)
+
+            url = f"http://{args.host}:{args.port}"
+            if not args.no_browser:
+                threading.Timer(1.0, open_browser, args=[url]).start()
+
+            print(f"CodeSherpa web interface: {url}")
+            uvicorn.run(app, host=args.host, port=args.port)
     finally:
         conn.close()
