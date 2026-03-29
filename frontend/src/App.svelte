@@ -136,9 +136,9 @@
       <!-- Content area -->
       <main class="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
         {#if selectedFile}
-          <CodeViewer projectId={selectedProject.id} filePath={selectedFile} />
+          <CodeViewer projectId={selectedProject.id} filePath={selectedFile} {dark} />
         {/if}
-        <QueryPanel projectId={selectedProject.id} />
+        <QueryPanel projectId={selectedProject.id} {dark} />
       </main>
     {/if}
   </div>
