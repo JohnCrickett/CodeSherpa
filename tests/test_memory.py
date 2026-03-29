@@ -4,11 +4,17 @@ import json
 from unittest.mock import MagicMock
 
 from codesherpa.memory import (
+    bulk_delete_all_memory,
+    bulk_delete_episodic_memory,
+    bulk_delete_semantic_memory,
+    delete_episodic_memory,
     delete_semantic_memory,
     ensure_memory_schema,
     get_exploration_summary,
+    list_episodic_memories,
     list_semantic_memories,
     search_episodic_memory,
+    search_memory,
     search_semantic_memory,
     store_episodic_memory,
     store_semantic_memory,
@@ -307,3 +313,186 @@ class TestDeleteSemanticMemory:
         ]
         assert len(delete_calls) == 1
         conn.commit.assert_called()
+
+
+class TestListEpisodicMemories:
+    """Tests for listing all episodic memories."""
+
+    def test_list_episodic_memories_returns_entries(self):
+        """Returns entries with all fields."""
+        cursor = _mock_cursor()
+        cursor.fetchall.return_value = [
+            (1, "What does billing do?", '["billing.py"]',
+             "Explored billing", "2025-01-01 00:00:00"),
+            (2, "How does auth work?", '["auth.py"]',
+             "Explored auth", "2025-01-02 00:00:00"),
+        ]
+        conn = _mock_conn(cursor)
+
+        memories = list_episodic_memories(conn, project_id=1)
+
+        assert len(memories) == 2
+        assert memories[0]["id"] == 1
+        assert memories[0]["query"] == "What does billing do?"
+        assert memories[0]["file_paths"] == ["billing.py"]
+        assert memories[0]["summary"] == "Explored billing"
+        assert memories[0]["created_at"] == "2025-01-01 00:00:00"
+        assert memories[1]["id"] == 2
+
+    def test_list_episodic_memories_empty(self):
+        """Returns empty list when none exist."""
+        cursor = _mock_cursor()
+        cursor.fetchall.return_value = []
+        conn = _mock_conn(cursor)
+
+        memories = list_episodic_memories(conn, project_id=1)
+        assert memories == []
+
+
+class TestDeleteEpisodicMemory:
+    """Tests for deleting episodic memory entries."""
+
+    def test_delete_episodic_memory(self):
+        """Executes DELETE with correct ID."""
+        cursor = _mock_cursor()
+        cursor.rowcount = 1
+        conn = _mock_conn(cursor)
+
+        delete_episodic_memory(conn, memory_id=7)
+
+        delete_calls = [
+            c for c in cursor.execute.call_args_list
+            if "DELETE" in str(c[0][0]) and "EPISODIC" in str(c[0][0])
+        ]
+        assert len(delete_calls) == 1
+        conn.commit.assert_called()
+
+
+class TestBulkDeleteEpisodicMemory:
+    """Tests for bulk deleting episodic memory."""
+
+    def test_bulk_delete_episodic_memory(self):
+        """Deletes all for project, returns count."""
+        cursor = _mock_cursor()
+        cursor.rowcount = 5
+        conn = _mock_conn(cursor)
+
+        count = bulk_delete_episodic_memory(conn, project_id=1)
+
+        assert count == 5
+        delete_calls = [
+            c for c in cursor.execute.call_args_list
+            if "DELETE" in str(c[0][0]) and "EPISODIC" in str(c[0][0])
+        ]
+        assert len(delete_calls) == 1
+        conn.commit.assert_called()
+
+
+class TestBulkDeleteSemanticMemory:
+    """Tests for bulk deleting semantic memory."""
+
+    def test_bulk_delete_semantic_memory(self):
+        """Deletes all for project, returns count."""
+        cursor = _mock_cursor()
+        cursor.rowcount = 3
+        conn = _mock_conn(cursor)
+
+        count = bulk_delete_semantic_memory(conn, project_id=1)
+
+        assert count == 3
+        delete_calls = [
+            c for c in cursor.execute.call_args_list
+            if "DELETE" in str(c[0][0]) and "SEMANTIC" in str(c[0][0])
+        ]
+        assert len(delete_calls) == 1
+        conn.commit.assert_called()
+
+
+class TestBulkDeleteAllMemory:
+    """Tests for bulk deleting all memory."""
+
+    def test_bulk_delete_all_memory(self):
+        """Deletes both types, returns counts."""
+        cursor = _mock_cursor()
+        # rowcount changes per execute call
+        cursor.rowcount = 5  # default
+        conn = _mock_conn(cursor)
+
+        # We need rowcount to return different values for each delete
+        rowcounts = [4, 3]
+        cursor_call_count = [0]
+        original_execute = cursor.execute
+
+        def track_execute(*args, **kwargs):
+            original_execute(*args, **kwargs)
+            if args and "DELETE" in str(args[0]):
+                cursor.rowcount = rowcounts[cursor_call_count[0]]
+                cursor_call_count[0] += 1
+
+        cursor.execute = MagicMock(side_effect=track_execute)
+
+        result = bulk_delete_all_memory(conn, project_id=1)
+
+        assert result["episodic_deleted"] == 4
+        assert result["semantic_deleted"] == 3
+        conn.commit.assert_called()
+
+
+class TestSearchMemory:
+    """Tests for unified memory search."""
+
+    def test_search_memory_combines_results(self):
+        """Returns results from both types, labeled."""
+        cursor = _mock_cursor()
+        conn = _mock_conn(cursor)
+        embedder = _mock_embedder()
+
+        # Mock fetchall to return results for 4 queries:
+        # 1. episodic vector search
+        # 2. semantic vector search
+        # 3. episodic text search
+        # 4. semantic text search
+        cursor.fetchall.side_effect = [
+            [(1, "billing query", '["billing.py"]', "billing summary", 0.9)],  # episodic vector
+            [(10, "payment context", 0.85)],  # semantic vector
+            [],  # episodic text
+            [],  # semantic text
+        ]
+
+        results = search_memory(conn, embedder, "billing", project_id=1)
+
+        assert len(results) == 2
+        types = {r["type"] for r in results}
+        assert "episodic" in types
+        assert "semantic" in types
+
+    def test_search_memory_deduplicates(self):
+        """Same entry from vector + text search appears once."""
+        cursor = _mock_cursor()
+        conn = _mock_conn(cursor)
+        embedder = _mock_embedder()
+
+        # Same episodic entry appears in both vector and text search
+        cursor.fetchall.side_effect = [
+            [(1, "billing query", '["billing.py"]', "billing summary", 0.9)],  # episodic vector
+            [],  # semantic vector
+            # episodic text (duplicate)
+            [(1, "billing query", '["billing.py"]', "billing summary", None)],
+            [],  # semantic text
+        ]
+
+        results = search_memory(conn, embedder, "billing", project_id=1)
+
+        episodic_results = [r for r in results if r["type"] == "episodic"]
+        assert len(episodic_results) == 1
+
+    def test_search_memory_empty(self):
+        """Returns empty list when no matches."""
+        cursor = _mock_cursor()
+        conn = _mock_conn(cursor)
+        embedder = _mock_embedder()
+
+        cursor.fetchall.side_effect = [[], [], [], []]
+
+        results = search_memory(conn, embedder, "nonexistent", project_id=1)
+        assert results == []

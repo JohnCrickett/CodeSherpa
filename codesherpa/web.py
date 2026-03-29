@@ -16,9 +16,15 @@ from pydantic import BaseModel
 
 from codesherpa.ingestion import ingest
 from codesherpa.memory import (
+    bulk_delete_all_memory,
+    bulk_delete_episodic_memory,
+    bulk_delete_semantic_memory,
+    delete_episodic_memory,
     delete_semantic_memory,
     get_exploration_summary,
+    list_episodic_memories,
     list_semantic_memories,
+    search_memory,
     store_semantic_memory,
 )
 from codesherpa.navigation import build_navigation_graph
@@ -59,6 +65,10 @@ class CreateProjectRequest(BaseModel):
 
 class SemanticMemoryRequest(BaseModel):
     content: str
+
+
+class MemorySearchRequest(BaseModel):
+    query: str
 
 
 # Tracks project IDs currently being ingested to prevent concurrent runs.
@@ -488,6 +498,78 @@ def create_app(
 
         delete_semantic_memory(conn, memory_id)
         return {"status": "deleted"}
+
+    @app.put("/api/projects/{project_id}/memory/semantic/{memory_id}")
+    def api_edit_semantic_memory(project_id: int, memory_id: int, req: SemanticMemoryRequest):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        content = req.content.strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="Content must not be empty.")
+
+        delete_semantic_memory(conn, memory_id)
+        store_semantic_memory(conn, loader.embedder, project_id, content)
+        return {"status": "updated"}
+
+    @app.get("/api/projects/{project_id}/memory/episodic")
+    def api_list_episodic_memories(project_id: int):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        return list_episodic_memories(conn, project_id)
+
+    @app.delete("/api/projects/{project_id}/memory/episodic/{memory_id}")
+    def api_delete_episodic_memory(project_id: int, memory_id: int):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        delete_episodic_memory(conn, memory_id)
+        return {"status": "deleted"}
+
+    @app.post("/api/projects/{project_id}/memory/search")
+    def api_search_memory(project_id: int, req: MemorySearchRequest):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        return search_memory(conn, loader.embedder, req.query, project_id)
+
+    @app.delete("/api/projects/{project_id}/memory/episodic", name="api_bulk_delete_episodic")
+    def api_bulk_delete_episodic(project_id: int):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        count = bulk_delete_episodic_memory(conn, project_id)
+        return {"deleted": count}
+
+    @app.delete("/api/projects/{project_id}/memory/semantic", name="api_bulk_delete_semantic")
+    def api_bulk_delete_semantic(project_id: int):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        count = bulk_delete_semantic_memory(conn, project_id)
+        return {"deleted": count}
+
+    @app.delete("/api/projects/{project_id}/memory")
+    def api_bulk_delete_all_memory(project_id: int):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        return bulk_delete_all_memory(conn, project_id)
 
     # Serve frontend static files if the build directory exists
     if STATIC_DIR.is_dir():

@@ -714,3 +714,205 @@ class TestAskWithMemoryRouting:
         assert resp.status_code == 200
         graph_call = mock_graph.invoke.call_args[0][0]
         assert graph_call["conversation_history"] == history
+
+
+class TestListEpisodicMemoriesEndpoint:
+    """GET /api/projects/{id}/memory/episodic returns episodic memories."""
+
+    def test_list_episodic_memories(self, client, mock_conn):
+        memories = [
+            {"id": 1, "query": "What does billing do?", "file_paths": ["billing.py"],
+             "summary": "Explored billing", "created_at": "2025-01-01"},
+        ]
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.list_episodic_memories", return_value=memories):
+                resp = client.get("/api/projects/1/memory/episodic")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["query"] == "What does billing do?"
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.get("/api/projects/999/memory/episodic")
+
+        assert resp.status_code == 404
+
+
+class TestDeleteEpisodicMemoryEndpoint:
+    """DELETE /api/projects/{id}/memory/episodic/{memory_id} deletes an episodic memory."""
+
+    def test_delete_episodic_memory(self, client, mock_conn):
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.delete_episodic_memory") as mock_delete:
+                resp = client.delete("/api/projects/1/memory/episodic/7")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+        mock_delete.assert_called_once_with(mock_conn, 7)
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.delete("/api/projects/999/memory/episodic/7")
+
+        assert resp.status_code == 404
+
+
+class TestEditSemanticMemoryEndpoint:
+    """PUT /api/projects/{id}/memory/semantic/{memory_id} edits a semantic memory."""
+
+    def test_edit_semantic_memory(self, client, mock_conn):
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.delete_semantic_memory") as mock_delete:
+                with patch("codesherpa.web.store_semantic_memory") as mock_store:
+                    resp = client.put(
+                        "/api/projects/1/memory/semantic/5",
+                        json={"content": "Updated content"},
+                    )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "updated"
+        mock_delete.assert_called_once_with(mock_conn, 5)
+        mock_store.assert_called_once()
+
+    def test_edit_semantic_memory_empty_content(self, client, mock_conn):
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            resp = client.put(
+                "/api/projects/1/memory/semantic/5",
+                json={"content": "  "},
+            )
+
+        assert resp.status_code == 400
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.put(
+                "/api/projects/999/memory/semantic/5",
+                json={"content": "Updated"},
+            )
+
+        assert resp.status_code == 404
+
+
+class TestSearchMemoryEndpoint:
+    """POST /api/projects/{id}/memory/search returns consolidated results."""
+
+    def test_search_memory(self, client, mock_conn):
+        results = [
+            {"type": "episodic", "id": 1, "score": 0.9, "query": "billing",
+             "file_paths": ["billing.py"], "summary": "billing summary"},
+            {"type": "semantic", "id": 10, "score": 0.85, "content": "payment context"},
+        ]
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.search_memory", return_value=results):
+                resp = client.post(
+                    "/api/projects/1/memory/search",
+                    json={"query": "billing"},
+                )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert data[0]["type"] == "episodic"
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.post(
+                "/api/projects/999/memory/search",
+                json={"query": "billing"},
+            )
+
+        assert resp.status_code == 404
+
+
+class TestBulkDeleteEpisodicEndpoint:
+    """DELETE /api/projects/{id}/memory/episodic bulk deletes episodic memory."""
+
+    def test_bulk_delete_episodic(self, client, mock_conn):
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.bulk_delete_episodic_memory", return_value=5):
+                resp = client.delete("/api/projects/1/memory/episodic")
+
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 5
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.delete("/api/projects/999/memory/episodic")
+
+        assert resp.status_code == 404
+
+
+class TestBulkDeleteSemanticEndpoint:
+    """DELETE /api/projects/{id}/memory/semantic bulk deletes semantic memory."""
+
+    def test_bulk_delete_semantic(self, client, mock_conn):
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.bulk_delete_semantic_memory", return_value=3):
+                resp = client.delete("/api/projects/1/memory/semantic")
+
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 3
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.delete("/api/projects/999/memory/semantic")
+
+        assert resp.status_code == 404
+
+
+class TestBulkDeleteAllMemoryEndpoint:
+    """DELETE /api/projects/{id}/memory bulk deletes all memory."""
+
+    def test_bulk_delete_all(self, client, mock_conn):
+        result = {"episodic_deleted": 4, "semantic_deleted": 3}
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.bulk_delete_all_memory", return_value=result):
+                resp = client.delete("/api/projects/1/memory")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["episodic_deleted"] == 4
+        assert data["semantic_deleted"] == 3
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.delete("/api/projects/999/memory")
+
+        assert resp.status_code == 404

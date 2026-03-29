@@ -18,6 +18,9 @@
 | [x] 14 | Language-aware dependency extraction: multi-language import/inheritance patterns | [task-14-language-aware-deps.md](../specs/task-14-language-aware-deps.md) | REQ-DEP-01 to 03 |
 | [x] 15 | Unified query classification: single LLM call for all four query types | [task-15-unified-classification.md](../specs/task-15-unified-classification.md) | REQ-CLASS-01 to 03 |
 | [x] 16 | LLM tool calling: iterative codebase exploration via search, read, and list tools | [task-16-llm-tool-calling.md](../specs/task-16-llm-tool-calling.md) | REQ-TOOL-01 to 07 |
+| [x] 17 | Memory management backend: new memory.py functions + API endpoints for list, search, edit, bulk delete | [task-17-memory-backend.md](../specs/task-17-memory-backend.md) | REQ-MEM-05 to 26 |
+| [ ] 18 | Memory management API client: TypeScript functions in api.ts for all memory endpoints | [task-18-memory-api-client.md](../specs/task-18-memory-api-client.md) | REQ-MEM-05 to 24 |
+| [ ] 19 | Memory management page: MemoryPage.svelte with project selector, display, search, CRUD, bulk delete | [task-19-memory-page.md](../specs/task-19-memory-page.md) | REQ-MEM-01 to 26 |
 
 ## Dependency Order
 
@@ -34,6 +37,8 @@
 09 → 13 (no dependencies between 13, 14, 15)
 09 → 14
 09 → 15 → 16
+
+08 → 17 → 18 → 19
 ```
 
 ### Phase 2 Notes (Tasks 13–16)
@@ -45,6 +50,17 @@
 ```
 Recommended order: 13 → 14 → 15 → 16
 (13 and 14 can be parallelised)
+```
+
+### Phase 3 Notes (Tasks 17–19)
+
+- **Task 17** (memory backend) is the foundation — adds new `memory.py` functions and API endpoints. Depends on Task 08 being complete (memory tables and existing functions must exist). No other dependencies.
+- **Task 18** (API client) depends on Task 17 — the TypeScript functions call the endpoints created in 17. Can be developed in parallel with 17 if the endpoint contracts are agreed, but should be validated after 17 is done.
+- **Task 19** (Memory page) depends on both 17 and 18 — it consumes the API client functions to build the frontend. Also depends on Task 11 (uses the same UI patterns and component library as ProjectsPage).
+
+```
+Recommended order: 17 → 18 → 19
+(17 and 18 can be parallelised if endpoint contracts are stable)
 ```
 
 ### Phase 1 Notes

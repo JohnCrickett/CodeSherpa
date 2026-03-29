@@ -313,3 +313,234 @@ def delete_semantic_memory(
         )
 
     conn.commit()
+
+
+def list_episodic_memories(
+    conn: oracledb.Connection,
+    project_id: int,
+) -> list[dict]:
+    """List all episodic memories for a project.
+
+    Returns:
+        List of dicts with id, query, file_paths, summary, created_at.
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"SELECT id, query, file_paths, summary, created_at FROM {EPISODIC_TABLE} "
+            f"WHERE project_id = :1 ORDER BY created_at",
+            [project_id],
+        )
+        rows = cursor.fetchall()
+
+    return [
+        {
+            "id": row[0],
+            "query": row[1],
+            "file_paths": json.loads(row[2]) if isinstance(row[2], str) else [],
+            "summary": row[3],
+            "created_at": str(row[4]) if row[4] else None,
+        }
+        for row in rows
+    ]
+
+
+def delete_episodic_memory(
+    conn: oracledb.Connection,
+    memory_id: int,
+) -> None:
+    """Delete a single episodic memory entry by ID."""
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"DELETE FROM {EPISODIC_TABLE} WHERE id = :1",
+            [memory_id],
+        )
+
+    conn.commit()
+
+
+def bulk_delete_episodic_memory(
+    conn: oracledb.Connection,
+    project_id: int,
+) -> int:
+    """Delete all episodic memory for a project. Return the number of rows deleted."""
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"DELETE FROM {EPISODIC_TABLE} WHERE project_id = :1",
+            [project_id],
+        )
+        count = cursor.rowcount
+
+    conn.commit()
+    return count
+
+
+def bulk_delete_semantic_memory(
+    conn: oracledb.Connection,
+    project_id: int,
+) -> int:
+    """Delete all semantic memory for a project. Return the number of rows deleted."""
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"DELETE FROM {SEMANTIC_TABLE} WHERE project_id = :1",
+            [project_id],
+        )
+        count = cursor.rowcount
+
+    conn.commit()
+    return count
+
+
+def bulk_delete_all_memory(
+    conn: oracledb.Connection,
+    project_id: int,
+) -> dict:
+    """Delete both episodic and semantic memory for a project.
+
+    Returns:
+        Dict with episodic_deleted and semantic_deleted counts.
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(
+            f"DELETE FROM {EPISODIC_TABLE} WHERE project_id = :1",
+            [project_id],
+        )
+        episodic_count = cursor.rowcount
+
+        cursor.execute(
+            f"DELETE FROM {SEMANTIC_TABLE} WHERE project_id = :1",
+            [project_id],
+        )
+        semantic_count = cursor.rowcount
+
+    conn.commit()
+    return {
+        "episodic_deleted": episodic_count,
+        "semantic_deleted": semantic_count,
+    }
+
+
+def search_memory(
+    conn: oracledb.Connection,
+    embedder: CodeRankEmbedder,
+    query: str,
+    project_id: int,
+    top_k: int = 10,
+) -> list[dict]:
+    """Unified search across both memory types.
+
+    Performs vector search and text-based substring filtering on both tables,
+    merges and deduplicates results, returns sorted by score descending.
+
+    Returns:
+        List of dicts with type, id, score, and type-specific fields.
+    """
+    query_embedding = embedder.embed(query, input_type="query")
+    results: dict[tuple[str, int], dict] = {}
+
+    # 1. Episodic vector search
+    try:
+        with conn.cursor() as cursor:
+            cursor.setinputsizes(
+                oracledb.DB_TYPE_VECTOR, None, oracledb.DB_TYPE_VECTOR,
+            )
+            cursor.execute(
+                f"""SELECT id, query, file_paths, summary,
+                           (1 - VECTOR_DISTANCE(embedding, :1, COSINE)) AS similarity
+                    FROM {EPISODIC_TABLE}
+                    WHERE project_id = :2
+                      AND (1 - VECTOR_DISTANCE(embedding, :3, COSINE)) >= 0.3
+                    ORDER BY similarity DESC
+                    FETCH FIRST :4 ROWS ONLY""",
+                [query_embedding, project_id, query_embedding, top_k],
+            )
+            for row in cursor.fetchall():
+                key = ("episodic", row[0])
+                results[key] = {
+                    "type": "episodic",
+                    "id": row[0],
+                    "query": row[1],
+                    "file_paths": json.loads(row[2]) if isinstance(row[2], str) else [],
+                    "summary": row[3],
+                    "score": row[4],
+                }
+    except oracledb.DatabaseError:
+        logger.debug("Episodic vector search failed", exc_info=True)
+
+    # 2. Semantic vector search
+    try:
+        with conn.cursor() as cursor:
+            cursor.setinputsizes(
+                oracledb.DB_TYPE_VECTOR, None, oracledb.DB_TYPE_VECTOR,
+            )
+            cursor.execute(
+                f"""SELECT id, content,
+                           (1 - VECTOR_DISTANCE(embedding, :1, COSINE)) AS similarity
+                    FROM {SEMANTIC_TABLE}
+                    WHERE project_id = :2
+                      AND (1 - VECTOR_DISTANCE(embedding, :3, COSINE)) >= 0.3
+                    ORDER BY similarity DESC
+                    FETCH FIRST :4 ROWS ONLY""",
+                [query_embedding, project_id, query_embedding, top_k],
+            )
+            for row in cursor.fetchall():
+                key = ("semantic", row[0])
+                results[key] = {
+                    "type": "semantic",
+                    "id": row[0],
+                    "content": row[1],
+                    "score": row[2],
+                }
+    except oracledb.DatabaseError:
+        logger.debug("Semantic vector search failed", exc_info=True)
+
+    # 3. Episodic text search
+    try:
+        like_pattern = f"%{query}%"
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""SELECT id, query, file_paths, summary
+                    FROM {EPISODIC_TABLE}
+                    WHERE project_id = :1
+                      AND (query LIKE :2 OR summary LIKE :3)
+                    FETCH FIRST :4 ROWS ONLY""",
+                [project_id, like_pattern, like_pattern, top_k],
+            )
+            for row in cursor.fetchall():
+                key = ("episodic", row[0])
+                if key not in results:
+                    results[key] = {
+                        "type": "episodic",
+                        "id": row[0],
+                        "query": row[1],
+                        "file_paths": json.loads(row[2]) if isinstance(row[2], str) else [],
+                        "summary": row[3],
+                        "score": 0.0,
+                    }
+    except oracledb.DatabaseError:
+        logger.debug("Episodic text search failed", exc_info=True)
+
+    # 4. Semantic text search
+    try:
+        like_pattern = f"%{query}%"
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""SELECT id, content
+                    FROM {SEMANTIC_TABLE}
+                    WHERE project_id = :1
+                      AND content LIKE :2
+                    FETCH FIRST :3 ROWS ONLY""",
+                [project_id, like_pattern, top_k],
+            )
+            for row in cursor.fetchall():
+                key = ("semantic", row[0])
+                if key not in results:
+                    results[key] = {
+                        "type": "semantic",
+                        "id": row[0],
+                        "content": row[1],
+                        "score": 0.0,
+                    }
+    except oracledb.DatabaseError:
+        logger.debug("Semantic text search failed", exc_info=True)
+
+    return sorted(results.values(), key=lambda r: r["score"], reverse=True)
