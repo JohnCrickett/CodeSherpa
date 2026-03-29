@@ -13,6 +13,7 @@
 | [x] 09 | Intelligent navigation: multi-step retrieval, follow-ups, exploration planning, map query | [task-09-intelligent-navigation.md](../specs/task-09-intelligent-navigation.md) | REQ-6 |
 | [x] 10 | Ingestion progress API: project creation endpoint, SSE ingestion streaming, progress callback | [task-10-ingestion-progress-api.md](../specs/task-10-ingestion-progress-api.md) | REQ-WEB-02 to 16 |
 | [x] 11 | Projects page: project list, create form, ingest/re-ingest with progress, navigation | [task-11-projects-page.md](../specs/task-11-projects-page.md) | REQ-WEB-01 to 19 |
+| [ ] 12 | Chat UI: ChatGPT-style conversation, follow-up mode, clickable sources, new layout | [task-12-chat-ui.md](../specs/task-12-chat-ui.md) | REQ-CHAT-01 to 08 |
 
 ## Dependency Order
 
@@ -23,6 +24,8 @@
                        (06 can start after 04)
 
 07 → 08 → 09
+     │
+     └→ 12
 ```
 
 ### Notes
