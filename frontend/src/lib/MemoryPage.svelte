@@ -1,7 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import {
-    listProjects,
     listEpisodicMemories,
     listSemanticMemories,
     searchMemory,
@@ -14,26 +12,19 @@
     bulkDeleteAllMemory,
   } from "./api";
   import type {
-    Project,
     EpisodicMemory,
     SemanticMemory,
     MemorySearchResult,
   } from "./api";
   import { Button } from "$lib/components/ui/button";
   import * as Card from "$lib/components/ui/card";
-  import * as Select from "$lib/components/ui/select";
   import { Textarea } from "$lib/components/ui/textarea";
 
   interface Props {
-    initialProjectId?: number | null;
+    projectId: number | null;
   }
 
-  let { initialProjectId = null }: Props = $props();
-
-  // Project state
-  let projects: Project[] = $state([]);
-  let selectedProjectId: number | null = $state(null);
-  let loadingProjects = $state(true);
+  let { projectId }: Props = $props();
 
   // Memory data
   let episodicMemories: EpisodicMemory[] = $state([]);
@@ -68,28 +59,14 @@
   let bulkDeleting = $state(false);
   let bulkError = $state("");
 
-  async function loadProjects() {
-    loadingProjects = true;
-    try {
-      projects = await listProjects();
-      if (initialProjectId && projects.some((p) => p.id === initialProjectId)) {
-        selectedProjectId = initialProjectId;
-      } else if (projects.length > 0 && !selectedProjectId) {
-        selectedProjectId = projects[0].id;
-      }
-    } finally {
-      loadingProjects = false;
-    }
-  }
-
   async function loadMemories() {
-    if (!selectedProjectId) return;
+    if (!projectId) return;
     loadingMemories = true;
     memoryError = "";
     try {
       const [ep, sem] = await Promise.all([
-        listEpisodicMemories(selectedProjectId),
-        listSemanticMemories(selectedProjectId),
+        listEpisodicMemories(projectId),
+        listSemanticMemories(projectId),
       ]);
       episodicMemories = ep;
       semanticMemories = sem;
@@ -100,21 +77,10 @@
     }
   }
 
-  function handleProjectChange(value: string | undefined) {
-    if (!value) return;
-    selectedProjectId = Number(value);
-    searchQuery = "";
-    searchActive = false;
-    searchResults = [];
-    editingId = null;
-    bulkConfirm = null;
-    loadMemories();
-  }
-
   async function handleSearch(e: SubmitEvent) {
     e.preventDefault();
     const query = searchQuery.trim();
-    if (!query || !selectedProjectId) {
+    if (!query || !projectId) {
       searchActive = false;
       searchResults = [];
       return;
@@ -122,7 +88,7 @@
     searching = true;
     searchError = "";
     try {
-      searchResults = await searchMemory(selectedProjectId, query);
+      searchResults = await searchMemory(projectId, query);
       searchActive = true;
     } catch (err) {
       searchError = err instanceof Error ? err.message : String(err);
@@ -141,14 +107,14 @@
   async function handleAdd(e: SubmitEvent) {
     e.preventDefault();
     const content = addContent.trim();
-    if (!content || !selectedProjectId) {
+    if (!content || !projectId) {
       addError = "Content is required.";
       return;
     }
     adding = true;
     addError = "";
     try {
-      await addSemanticMemory(selectedProjectId, content);
+      await addSemanticMemory(projectId, content);
       addContent = "";
       await loadMemories();
     } catch (err) {
@@ -171,7 +137,7 @@
   }
 
   async function saveEdit() {
-    if (!selectedProjectId || editingId === null) return;
+    if (!projectId || editingId === null) return;
     const content = editContent.trim();
     if (!content) {
       editError = "Content cannot be empty.";
@@ -180,7 +146,7 @@
     saving = true;
     editError = "";
     try {
-      await editSemanticMemory(selectedProjectId, editingId, content);
+      await editSemanticMemory(projectId, editingId, content);
       editingId = null;
       editContent = "";
       await loadMemories();
@@ -192,11 +158,11 @@
   }
 
   async function handleDeleteEpisodic(id: number) {
-    if (!selectedProjectId) return;
+    if (!projectId) return;
     deletingId = id;
     deleteType = "episodic";
     try {
-      await deleteEpisodicMemory(selectedProjectId, id);
+      await deleteEpisodicMemory(projectId, id);
       if (searchActive) {
         searchResults = searchResults.filter((r) => !(r.type === "episodic" && r.id === id));
       }
@@ -208,11 +174,11 @@
   }
 
   async function handleDeleteSemantic(id: number) {
-    if (!selectedProjectId) return;
+    if (!projectId) return;
     deletingId = id;
     deleteType = "semantic";
     try {
-      await deleteSemanticMemory(selectedProjectId, id);
+      await deleteSemanticMemory(projectId, id);
       if (searchActive) {
         searchResults = searchResults.filter((r) => !(r.type === "semantic" && r.id === id));
       }
@@ -224,16 +190,16 @@
   }
 
   async function handleBulkDelete() {
-    if (!selectedProjectId || !bulkConfirm) return;
+    if (!projectId || !bulkConfirm) return;
     bulkDeleting = true;
     bulkError = "";
     try {
       if (bulkConfirm === "episodic") {
-        await bulkDeleteEpisodicMemory(selectedProjectId);
+        await bulkDeleteEpisodicMemory(projectId);
       } else if (bulkConfirm === "semantic") {
-        await bulkDeleteSemanticMemory(selectedProjectId);
+        await bulkDeleteSemanticMemory(projectId);
       } else {
-        await bulkDeleteAllMemory(selectedProjectId);
+        await bulkDeleteAllMemory(projectId);
       }
       bulkConfirm = null;
       if (searchActive) {
@@ -255,51 +221,22 @@
   }
 
   $effect(() => {
-    if (selectedProjectId) {
+    if (projectId) {
+      // Reset state when project changes
+      searchQuery = "";
+      searchActive = false;
+      searchResults = [];
+      editingId = null;
+      bulkConfirm = null;
       loadMemories();
     }
-  });
-
-  onMount(() => {
-    loadProjects();
   });
 </script>
 
 <div class="mx-auto max-w-4xl space-y-6 p-6">
-  <div class="flex items-center justify-between">
-    <h1 class="text-xl font-semibold">Memory</h1>
+  <h1 class="text-xl font-semibold">Memory</h1>
 
-    <!-- Project selector -->
-    {#if loadingProjects}
-      <span class="text-xs text-muted-foreground">Loading projects...</span>
-    {:else if projects.length === 0}
-      <span class="text-xs text-muted-foreground">No projects found.</span>
-    {:else}
-      <Select.Root
-        type="single"
-        value={selectedProjectId ? String(selectedProjectId) : undefined}
-        onValueChange={handleProjectChange}
-      >
-        <Select.Trigger class="h-8 w-[260px] text-xs">
-          {#if selectedProjectId}
-            {@const proj = projects.find((p) => p.id === selectedProjectId)}
-            {proj?.name ?? "Select project"}
-          {:else}
-            Select project
-          {/if}
-        </Select.Trigger>
-        <Select.Content>
-          {#each projects as project}
-            <Select.Item value={String(project.id)} class="text-xs">
-              {project.name}
-            </Select.Item>
-          {/each}
-        </Select.Content>
-      </Select.Root>
-    {/if}
-  </div>
-
-  {#if !selectedProjectId}
+  {#if !projectId}
     <p class="text-sm text-muted-foreground">Select a project to view its memory.</p>
   {:else}
     <!-- Search -->

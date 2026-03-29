@@ -122,7 +122,7 @@
       </nav>
     </div>
     <div class="flex items-center gap-2">
-      {#if currentPage === "explorer"}
+      {#if currentPage === "explorer" || currentPage === "memory"}
         {#if loadingProjects}
           <span class="text-xs text-muted-foreground">Loading...</span>
         {:else if projectsError}
@@ -172,7 +172,7 @@
   {#if currentPage === "projects"}
     <ProjectsPage onNavigateToExplorer={handleNavigateToExplorer} />
   {:else if currentPage === "memory"}
-    <MemoryPage initialProjectId={selectedProject?.id ?? null} />
+    <MemoryPage projectId={selectedProject?.id ?? null} />
   {:else}
     <div class="flex flex-1 overflow-hidden">
       {#if selectedProject}
