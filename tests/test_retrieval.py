@@ -183,6 +183,44 @@ class TestFulltextSearch:
 
         assert len(results) == 2
 
+    def test_handles_question_marks_in_query(self):
+        """Queries with ? (Oracle Text wildcard) don't cause parser errors."""
+        rows = [
+            ("def do_thing(): ...", "a.py", "function", "python", 0, 20, 1),
+        ]
+        cursor = _make_mock_cursor(rows)
+        conn = _make_mock_conn(cursor)
+
+        results = fulltext_search(conn, "what does this do?")
+
+        assert len(results) == 1
+        # Verify the escaped query passed to Oracle has no raw ?
+        sql_params = cursor.execute.call_args[0][1]
+        assert "?" not in sql_params[0]
+
+    def test_handles_special_characters_in_query(self):
+        """Queries with Oracle Text operators (& | ! * %) are safely escaped."""
+        cursor = _make_mock_cursor([])
+        conn = _make_mock_conn(cursor)
+
+        fulltext_search(conn, "foo & bar | baz*")
+
+        sql_params = cursor.execute.call_args[0][1]
+        query_sent = sql_params[0]
+        assert "&" not in query_sent
+        assert "|" not in query_sent
+        assert "*" not in query_sent
+
+    def test_returns_empty_for_query_with_only_special_chars(self):
+        """A query of only special characters returns empty without querying."""
+        cursor = _make_mock_cursor([])
+        conn = _make_mock_conn(cursor)
+
+        results = fulltext_search(conn, "???")
+
+        assert results == []
+        cursor.execute.assert_not_called()
+
 
 class TestHybridSearch:
     """Tests for hybrid search combining vector and full-text results."""

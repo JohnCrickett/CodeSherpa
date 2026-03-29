@@ -46,6 +46,16 @@
 - npm cache on this machine has root-owned files; use `--cache "$TMPDIR/npm-cache"` when running npm install to work around it.
 - Frontend uses Svelte 5 runes (`$state`, `$derived`, `$effect`, `$props`) and snippets (`{#snippet}` / `{@render}`).
 
+## Memory
+- `codesherpa/memory.py` has two Oracle DB tables: `EPISODIC_MEMORY` (tracks explored areas) and `SEMANTIC_MEMORY` (developer-provided project context).
+- Both tables store 768-dim vector embeddings for semantic retrieval, with `project_id` for isolation.
+- EPISODIC_MEMORY columns: id, project_id, embedding, query (CLOB), file_paths (CLOB, JSON array), summary (CLOB), created_at.
+- SEMANTIC_MEMORY columns: id, project_id, embedding, content (CLOB), created_at.
+- `codesherpa/routing.py` has a LangGraph state graph: check_memory → route (context vs fresh) → explain → update_memory.
+- The `/api/projects/{id}/ask` endpoint now uses `build_query_graph()` instead of calling `explain()` directly.
+- Web API memory endpoints: `GET .../memory/exploration`, `GET/POST .../memory/semantic`, `DELETE .../memory/semantic/{id}`.
+- When updating the ask endpoint behavior, existing test_web.py tests for `/ask` need to mock `build_query_graph` instead of `explain`.
+
 ## Retrieval
 - `codesherpa/retrieval.py` has `vector_search()`, `fulltext_search()`, and `hybrid_search()` returning `SearchResult` dataclass instances.
 - Vector search uses `(1 - VECTOR_DISTANCE(embedding, :vec, COSINE))` for cosine similarity (Oracle returns distance, not similarity).

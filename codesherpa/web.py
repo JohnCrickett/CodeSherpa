@@ -13,8 +13,13 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from codesherpa.explanation import explain
 from codesherpa.ingestion import ingest
+from codesherpa.memory import (
+    delete_semantic_memory,
+    get_exploration_summary,
+    list_semantic_memories,
+    store_semantic_memory,
+)
 from codesherpa.parser import walk_directory
 from codesherpa.project import (
     ProjectExistsError,
@@ -26,6 +31,7 @@ from codesherpa.project import (
 )
 from codesherpa.repo import RepoError, resolve_source
 from codesherpa.retrieval import hybrid_search
+from codesherpa.routing import build_query_graph
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +52,10 @@ class QuestionRequest(BaseModel):
 class CreateProjectRequest(BaseModel):
     name: str
     source: str
+
+
+class SemanticMemoryRequest(BaseModel):
+    content: str
 
 
 # Tracks project IDs currently being ingested to prevent concurrent runs.
@@ -220,7 +230,25 @@ def create_app(
                     f"Question: {question}"
                 )
 
-        result = explain(conn, loader.embedder, loader.llm, question, project_id=project_id)
+        try:
+            graph = build_query_graph()
+            graph_result = graph.invoke({
+                "query": question,
+                "project_id": project_id,
+                "conn": conn,
+                "embedder": loader.embedder,
+                "llm": loader.llm,
+                "episodic_memories": [],
+                "semantic_memories": [],
+                "response": None,
+                "explored_files": [],
+            })
+            result = graph_result["response"]
+        except Exception:
+            logger.exception("Memory-aware query failed, falling back to direct explain")
+            from codesherpa.explanation import explain
+            result = explain(conn, loader.embedder, loader.llm, question, project_id=project_id)
+
         return {
             "explanation": result.explanation,
             "sources": [
@@ -341,6 +369,48 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.get("/api/projects/{project_id}/memory/exploration")
+    def api_exploration_summary(project_id: int):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        return get_exploration_summary(conn, project_id)
+
+    @app.get("/api/projects/{project_id}/memory/semantic")
+    def api_list_semantic_memories(project_id: int):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        return list_semantic_memories(conn, project_id)
+
+    @app.post("/api/projects/{project_id}/memory/semantic", status_code=201)
+    def api_add_semantic_memory(project_id: int, req: SemanticMemoryRequest):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        content = req.content.strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="Content must not be empty.")
+
+        store_semantic_memory(conn, loader.embedder, project_id, content)
+        return {"status": "created"}
+
+    @app.delete("/api/projects/{project_id}/memory/semantic/{memory_id}")
+    def api_delete_semantic_memory(project_id: int, memory_id: int):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        delete_semantic_memory(conn, memory_id)
+        return {"status": "deleted"}
 
     # Serve frontend static files if the build directory exists
     if STATIC_DIR.is_dir():

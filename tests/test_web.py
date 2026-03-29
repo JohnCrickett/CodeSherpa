@@ -121,8 +121,11 @@ class TestAskEndpoint:
         sources = [_make_search_result()]
         result = ExplanationResult(explanation="f is a function", sources=sources)
 
+        mock_graph = MagicMock()
+        mock_graph.invoke.return_value = {"response": result}
+
         with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
-            with patch("codesherpa.web.explain", return_value=result):
+            with patch("codesherpa.web.build_query_graph", return_value=mock_graph):
                 resp = client.post(
                     "/api/projects/1/ask",
                     json={"question": "What does f do?"},
@@ -161,17 +164,20 @@ class TestAskEndpoint:
 
         result = ExplanationResult(explanation="it does stuff", sources=[])
 
+        mock_graph = MagicMock()
+        mock_graph.invoke.return_value = {"response": result}
+
         with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
-            with patch("codesherpa.web.explain", return_value=result) as mock_explain:
+            with patch("codesherpa.web.build_query_graph", return_value=mock_graph):
                 client.post(
                     "/api/projects/1/ask",
                     json={"question": "What does this file do?", "active_file": "src/main.py"},
                 )
 
-        call_args = mock_explain.call_args
-        question_sent = call_args[1].get("question") or call_args[0][3]
-        assert "src/main.py" in question_sent
-        assert "What does this file do?" in question_sent
+        graph_call = mock_graph.invoke.call_args[0][0]
+        query_sent = graph_call["query"]
+        assert "src/main.py" in query_sent
+        assert "What does this file do?" in query_sent
 
 
 class TestQueryEndpoint:
@@ -494,3 +500,152 @@ class TestAutoLaunch:
         with patch("webbrowser.open") as mock_open:
             open_browser("http://localhost:8000")
             mock_open.assert_called_once_with("http://localhost:8000")
+
+
+class TestExplorationSummary:
+    """GET /api/projects/{id}/memory/exploration returns explored areas."""
+
+    def test_returns_exploration_summary(self, client, mock_conn):
+        summary = {"explored_files": ["a.py", "b.py"], "queries": ["What does a do?"]}
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.get_exploration_summary", return_value=summary):
+                resp = client.get("/api/projects/1/memory/exploration")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["explored_files"] == ["a.py", "b.py"]
+        assert data["queries"] == ["What does a do?"]
+
+    def test_returns_empty_summary(self, client, mock_conn):
+        summary = {"explored_files": [], "queries": []}
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.get_exploration_summary", return_value=summary):
+                resp = client.get("/api/projects/1/memory/exploration")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["explored_files"] == []
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.get("/api/projects/999/memory/exploration")
+
+        assert resp.status_code == 404
+
+
+class TestListSemanticMemoriesEndpoint:
+    """GET /api/projects/{id}/memory/semantic returns semantic memories."""
+
+    def test_returns_memories(self, client, mock_conn):
+        memories = [
+            {"id": 1, "content": "Payment context", "created_at": "2025-01-01"},
+            {"id": 2, "content": "Auth context", "created_at": "2025-01-02"},
+        ]
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.list_semantic_memories", return_value=memories):
+                resp = client.get("/api/projects/1/memory/semantic")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert data[0]["content"] == "Payment context"
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.get("/api/projects/999/memory/semantic")
+
+        assert resp.status_code == 404
+
+
+class TestAddSemanticMemoryEndpoint:
+    """POST /api/projects/{id}/memory/semantic adds a semantic memory."""
+
+    def test_creates_memory(self, client, mock_conn):
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.store_semantic_memory") as mock_store:
+                resp = client.post(
+                    "/api/projects/1/memory/semantic",
+                    json={"content": "This service owns payments"},
+                )
+
+        assert resp.status_code == 201
+        mock_store.assert_called_once()
+
+    def test_empty_content_returns_400(self, client, mock_conn):
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            resp = client.post(
+                "/api/projects/1/memory/semantic",
+                json={"content": "  "},
+            )
+
+        assert resp.status_code == 400
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.post(
+                "/api/projects/999/memory/semantic",
+                json={"content": "context"},
+            )
+
+        assert resp.status_code == 404
+
+
+class TestDeleteSemanticMemoryEndpoint:
+    """DELETE /api/projects/{id}/memory/semantic/{memory_id} deletes a memory."""
+
+    def test_deletes_memory(self, client, mock_conn):
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.delete_semantic_memory") as mock_delete:
+                resp = client.delete("/api/projects/1/memory/semantic/5")
+
+        assert resp.status_code == 200
+        mock_delete.assert_called_once_with(mock_conn, 5)
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.delete("/api/projects/999/memory/semantic/5")
+
+        assert resp.status_code == 404
+
+
+class TestAskWithMemoryRouting:
+    """POST /api/projects/{id}/ask uses memory-aware routing."""
+
+    def test_ask_uses_graph_routing(self, client, mock_conn, mock_embedder, mock_llm):
+        from codesherpa.explanation import ExplanationResult
+
+        result = ExplanationResult(explanation="routed answer", sources=[])
+
+        mock_graph = MagicMock()
+        mock_graph.invoke.return_value = {"response": result}
+
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.build_query_graph", return_value=mock_graph):
+                resp = client.post(
+                    "/api/projects/1/ask",
+                    json={"question": "What does f do?"},
+                )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["explanation"] == "routed answer"

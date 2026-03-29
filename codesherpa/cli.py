@@ -1,6 +1,7 @@
 """CLI entry point for CodeSherpa."""
 
 import argparse
+import logging
 import sys
 
 
@@ -142,6 +143,7 @@ def run_query_repl(
 
 def main(argv: list[str] | None = None) -> None:
     """Main entry point for the CLI."""
+    logging.basicConfig(level=logging.INFO)
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -166,6 +168,7 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         from codesherpa.ingestion import ensure_schema
+        from codesherpa.memory import ensure_memory_schema
         from codesherpa.project import (
             ProjectNotFoundError,
             delete_project,
@@ -179,6 +182,7 @@ def main(argv: list[str] | None = None) -> None:
 
         ensure_projects_schema(conn)
         ensure_schema(conn)
+        ensure_memory_schema(conn)
         migrate_orphaned_chunks(conn)
 
         if args.command == "ingest":

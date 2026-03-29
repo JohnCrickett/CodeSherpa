@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -114,8 +115,13 @@ def fulltext_search(
         FETCH FIRST :2 ROWS ONLY
     """
 
-    # Wrap in {} to escape Oracle Text special characters (?, &, -, etc.)
-    escaped_query = "{" + query + "}"
+    # Strip Oracle Text special characters that cause parser errors,
+    # then wrap each remaining word in {} to escape reserved words.
+    cleaned = re.sub(r"[?*%$!&\-()[\]{}|\\~<>=;:,.]", " ", query)
+    words = cleaned.split()
+    if not words:
+        return []
+    escaped_query = " AND ".join("{" + w + "}" for w in words)
 
     params = [escaped_query, top_k]
     if project_id is not None:
