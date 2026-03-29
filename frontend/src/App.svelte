@@ -6,6 +6,7 @@
   import FileTree from "./lib/FileTree.svelte";
   import ChatPanel from "./lib/ChatPanel.svelte";
   import ProjectsPage from "./lib/ProjectsPage.svelte";
+  import MemoryPage from "./lib/MemoryPage.svelte";
   import * as Select from "$lib/components/ui/select";
   import { ScrollArea } from "$lib/components/ui/scroll-area";
   import { Button } from "$lib/components/ui/button";
@@ -19,7 +20,7 @@
 
   let dark = $state(getInitialTheme());
 
-  let currentPage: "explorer" | "projects" = $state("explorer");
+  let currentPage: "explorer" | "projects" | "memory" = $state("explorer");
   let projects: Project[] = $state([]);
   let selectedProject: Project | null = $state(null);
   let files: string[] = $state([]);
@@ -110,6 +111,14 @@
         >
           Projects
         </Button>
+        <Button
+          variant={currentPage === "memory" ? "secondary" : "ghost"}
+          size="sm"
+          class="h-6 text-xs"
+          onclick={() => currentPage = "memory"}
+        >
+          Memory
+        </Button>
       </nav>
     </div>
     <div class="flex items-center gap-2">
@@ -162,6 +171,8 @@
   <!-- Main content -->
   {#if currentPage === "projects"}
     <ProjectsPage onNavigateToExplorer={handleNavigateToExplorer} />
+  {:else if currentPage === "memory"}
+    <MemoryPage initialProjectId={selectedProject?.id ?? null} />
   {:else}
     <div class="flex flex-1 overflow-hidden">
       {#if selectedProject}
