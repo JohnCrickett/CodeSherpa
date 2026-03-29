@@ -5,6 +5,7 @@
   import CodeViewer from "./lib/CodeViewer.svelte";
   import FileTree from "./lib/FileTree.svelte";
   import QueryPanel from "./lib/QueryPanel.svelte";
+  import ProjectsPage from "./lib/ProjectsPage.svelte";
   import * as Select from "$lib/components/ui/select";
   import { ScrollArea } from "$lib/components/ui/scroll-area";
   import { Button } from "$lib/components/ui/button";
@@ -18,20 +19,25 @@
 
   let dark = $state(getInitialTheme());
 
+  let currentPage: "explorer" | "projects" = $state("explorer");
   let projects: Project[] = $state([]);
   let selectedProject: Project | null = $state(null);
   let files: string[] = $state([]);
   let selectedFile: string | null = $state(null);
   let loadingProjects = $state(true);
   let loadingFiles = $state(false);
+  let projectsError = $state("");
 
   async function loadProjects() {
     loadingProjects = true;
+    projectsError = "";
     try {
       projects = await listProjects();
       if (projects.length > 0 && !selectedProject) {
         await selectProject(projects[0]);
       }
+    } catch (err) {
+      projectsError = err instanceof Error ? err.message : String(err);
     } finally {
       loadingProjects = false;
     }
@@ -58,6 +64,14 @@
     if (project) selectProject(project);
   }
 
+  async function handleNavigateToExplorer(project: Project) {
+    await loadProjects();
+    // Re-fetch the project to get updated stats
+    const updated = projects.find((p) => p.id === project.id);
+    selectProject(updated ?? project);
+    currentPage = "explorer";
+  }
+
   function toggleTheme() {
     dark = !dark;
     document.documentElement.classList.toggle("dark", dark);
@@ -73,39 +87,63 @@
 <div class="flex h-screen flex-col text-[13px]">
   <!-- Header -->
   <header class="flex h-10 shrink-0 items-center justify-between border-b px-4">
-    <span class="text-sm font-semibold tracking-tight">CodeSherpa</span>
-    <div class="flex items-center gap-2">
-      {#if loadingProjects}
-        <span class="text-xs text-muted-foreground">Loading...</span>
-      {:else if projects.length === 0}
-        <span class="text-xs text-muted-foreground">No projects found.</span>
-      {:else}
-        <Select.Root
-          type="single"
-          value={selectedProject ? String(selectedProject.id) : undefined}
-          onValueChange={handleProjectChange}
+    <div class="flex items-center gap-3">
+      <span class="text-sm font-semibold tracking-tight">CodeSherpa</span>
+      <nav class="flex gap-1">
+        <Button
+          variant={currentPage === "explorer" ? "secondary" : "ghost"}
+          size="sm"
+          class="h-6 text-xs"
+          onclick={() => { currentPage = "explorer"; loadProjects(); }}
         >
-          <Select.Trigger class="h-7 w-[240px] text-xs">
-            {#if selectedProject}
-              {selectedProject.name}
-              <span class="text-muted-foreground ml-1">
-                {selectedProject.file_count} files
-              </span>
-            {:else}
-              Select project
-            {/if}
-          </Select.Trigger>
-          <Select.Content>
-            {#each projects as project}
-              <Select.Item value={String(project.id)} class="text-xs">
-                {project.name}
-                <span class="ml-auto text-muted-foreground">
-                  {project.file_count} files, {project.chunk_count} chunks
+          Explorer
+        </Button>
+        <Button
+          variant={currentPage === "projects" ? "secondary" : "ghost"}
+          size="sm"
+          class="h-6 text-xs"
+          onclick={() => currentPage = "projects"}
+        >
+          Projects
+        </Button>
+      </nav>
+    </div>
+    <div class="flex items-center gap-2">
+      {#if currentPage === "explorer"}
+        {#if loadingProjects}
+          <span class="text-xs text-muted-foreground">Loading...</span>
+        {:else if projectsError}
+          <span class="text-xs text-red-500">Error: {projectsError}</span>
+        {:else if projects.length === 0}
+          <span class="text-xs text-muted-foreground">No projects found.</span>
+        {:else}
+          <Select.Root
+            type="single"
+            value={selectedProject ? String(selectedProject.id) : undefined}
+            onValueChange={handleProjectChange}
+          >
+            <Select.Trigger class="h-7 w-[240px] text-xs">
+              {#if selectedProject}
+                {selectedProject.name}
+                <span class="text-muted-foreground ml-1">
+                  {selectedProject.file_count} files
                 </span>
-              </Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
+              {:else}
+                Select project
+              {/if}
+            </Select.Trigger>
+            <Select.Content>
+              {#each projects as project}
+                <Select.Item value={String(project.id)} class="text-xs">
+                  {project.name}
+                  <span class="ml-auto text-muted-foreground">
+                    {project.file_count} files, {project.chunk_count} chunks
+                  </span>
+                </Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        {/if}
       {/if}
       <Button variant="ghost" size="icon" class="h-7 w-7" onclick={toggleTheme} aria-label="Toggle theme">
         {#if dark}
@@ -118,28 +156,32 @@
   </header>
 
   <!-- Main content -->
-  <div class="flex flex-1 overflow-hidden">
-    {#if selectedProject}
-      <!-- Sidebar -->
-      <aside class="w-60 min-w-60 border-r">
-        <ScrollArea class="h-full">
-          <div class="p-2">
-            {#if loadingFiles}
-              <p class="px-2 py-1 text-xs text-muted-foreground">Loading...</p>
-            {:else}
-              <FileTree {files} {selectedFile} onselect={handleFileSelect} />
-            {/if}
-          </div>
-        </ScrollArea>
-      </aside>
+  {#if currentPage === "projects"}
+    <ProjectsPage onNavigateToExplorer={handleNavigateToExplorer} />
+  {:else}
+    <div class="flex flex-1 overflow-hidden">
+      {#if selectedProject}
+        <!-- Sidebar -->
+        <aside class="w-60 min-w-60 border-r">
+          <ScrollArea class="h-full">
+            <div class="p-2">
+              {#if loadingFiles}
+                <p class="px-2 py-1 text-xs text-muted-foreground">Loading...</p>
+              {:else}
+                <FileTree {files} {selectedFile} onselect={handleFileSelect} />
+              {/if}
+            </div>
+          </ScrollArea>
+        </aside>
 
-      <!-- Content area -->
-      <main class="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
-        {#if selectedFile}
-          <CodeViewer projectId={selectedProject.id} filePath={selectedFile} {dark} />
-        {/if}
-        <QueryPanel projectId={selectedProject.id} {dark} activeFile={selectedFile} />
-      </main>
-    {/if}
-  </div>
+        <!-- Content area -->
+        <main class="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
+          {#if selectedFile}
+            <CodeViewer projectId={selectedProject.id} filePath={selectedFile} {dark} />
+          {/if}
+          <QueryPanel projectId={selectedProject.id} {dark} activeFile={selectedFile} />
+        </main>
+      {/if}
+    </div>
+  {/if}
 </div>

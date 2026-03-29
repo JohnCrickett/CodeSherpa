@@ -628,6 +628,31 @@ class TestDeleteSemanticMemoryEndpoint:
         assert resp.status_code == 404
 
 
+class TestDeleteProjectEndpoint:
+    """DELETE /api/projects/{id} deletes a project and all its data."""
+
+    def test_deletes_project_returns_200(self, client, mock_conn):
+        project = {"id": 1, "name": "proj", "source_path": "/src"}
+        with patch("codesherpa.web.get_project_by_id", return_value=project):
+            with patch("codesherpa.web.delete_project_by_id") as mock_delete:
+                resp = client.delete("/api/projects/1")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+        mock_delete.assert_called_once_with(mock_conn, 1)
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.delete("/api/projects/999")
+
+        assert resp.status_code == 404
+
+
 class TestAskWithMemoryRouting:
     """POST /api/projects/{id}/ask uses memory-aware routing."""
 

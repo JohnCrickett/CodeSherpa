@@ -174,6 +174,34 @@ class TestDeleteProject:
         assert "DELETE" in executed_sql
         mock_conn.commit.assert_called()
 
+    def test_deletes_episodic_memory_for_project(self):
+        mock_conn, mock_cursor = _make_mock_conn()
+        mock_cursor.fetchone.return_value = (
+            1, "proj", "/path",
+            datetime.now(timezone.utc), None, 5, 20,
+        )
+
+        delete_project(mock_conn, "proj")
+
+        executed_sql = " ".join(
+            str(c.args[0]) for c in mock_cursor.execute.call_args_list
+        ).upper()
+        assert "EPISODIC_MEMORY" in executed_sql
+
+    def test_deletes_semantic_memory_for_project(self):
+        mock_conn, mock_cursor = _make_mock_conn()
+        mock_cursor.fetchone.return_value = (
+            1, "proj", "/path",
+            datetime.now(timezone.utc), None, 5, 20,
+        )
+
+        delete_project(mock_conn, "proj")
+
+        executed_sql = " ".join(
+            str(c.args[0]) for c in mock_cursor.execute.call_args_list
+        ).upper()
+        assert "SEMANTIC_MEMORY" in executed_sql
+
     def test_raises_if_project_not_found(self):
         mock_conn, mock_cursor = _make_mock_conn()
         mock_cursor.fetchone.return_value = None

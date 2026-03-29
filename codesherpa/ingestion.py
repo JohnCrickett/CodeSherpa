@@ -210,11 +210,20 @@ def ingest(
         existing_hashes = _get_existing_file_hashes(cursor, project_id)
 
         # Parse the codebase
-        _emit({"phase": "parsing", "detail": "Parsing codebase..."})
+        source_files = walk_directory(root)
+        total_files = len(source_files)
+        _emit({"phase": "parsing", "total_files": total_files})
         all_chunks, errors = parse_codebase(root)
         if errors:
             for err in errors:
                 logger.warning(err)
+
+        total_chunks = len(all_chunks)
+        _emit({
+            "phase": "parsing_done",
+            "total_files": total_files,
+            "total_chunks": total_chunks,
+        })
 
         # Group chunks by file path
         chunks_by_file: dict[str, list[CodeChunk]] = {}
@@ -223,7 +232,6 @@ def ingest(
 
         # Compute current file hashes by reading files
         current_hashes: dict[str, str] = {}
-        source_files = walk_directory(root)
         for file_path in source_files:
             rel_path = os.path.relpath(file_path, root)
             with open(file_path, encoding="utf-8", errors="replace") as f:
@@ -263,36 +271,45 @@ def ingest(
 
         if all_new_chunks:
             texts = [chunk.content for chunk in all_new_chunks]
+            total_to_embed = len(texts)
 
             # Embed in batches with progress
-            batch_size = 32
-            total_batches = (len(texts) + batch_size - 1) // batch_size
+            batch_size = 16
+            total_batches = (total_to_embed + batch_size - 1) // batch_size
             embeddings: list[list[float]] = []
-            for i in tqdm(range(0, len(texts), batch_size),
+            chunks_embedded = 0
+            for i in tqdm(range(0, total_to_embed, batch_size),
                           desc="Embedding chunks",
                           unit="batch"):
                 batch_num = i // batch_size + 1
+                batch = texts[i : i + batch_size]
+                chunks_embedded += len(batch)
                 _emit({
                     "phase": "embedding",
                     "batch": batch_num,
                     "total_batches": total_batches,
+                    "chunks_done": chunks_embedded,
+                    "chunks_total": total_to_embed,
                 })
-                batch = texts[i : i + batch_size]
                 embeddings.extend(embedder.embed_batch(batch))
 
             # Insert in per-file groups for correct hash association
             idx = 0
-            total_files = len(files_to_embed)
+            total_embed_files = len(files_to_embed)
+            chunks_stored = 0
             for file_num, (rel_path, chunks) in enumerate(
                 tqdm(files_to_embed.items(), desc="Storing chunks", unit="file"),
                 start=1,
             ):
+                n = len(chunks)
+                chunks_stored += n
                 _emit({
                     "phase": "storing",
                     "current": file_num,
-                    "total": total_files,
+                    "total": total_embed_files,
+                    "chunks_done": chunks_stored,
+                    "chunks_total": total_to_embed,
                 })
-                n = len(chunks)
                 chunk_embeddings = embeddings[idx : idx + n]
                 _insert_chunks(
                     cursor, chunks, chunk_embeddings, current_hashes[rel_path],

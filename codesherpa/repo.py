@@ -1,9 +1,13 @@
 """Repository source resolution: local paths and GitHub URL cloning."""
 
+import logging
+import os
 import re
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path.home() / ".cache" / "codesherpa"
 
@@ -76,31 +80,81 @@ def resolve_source(source: str) -> str:
     return str(path)
 
 
+def _sanitize_git_output(text: str | bytes) -> str:
+    """Remove tokens from git command output to avoid leaking credentials."""
+    s = text.decode("utf-8", errors="replace") if isinstance(text, bytes) else text
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        s = s.replace(token, "***")
+    return s
+
+
+def _authenticated_url(url: str) -> str:
+    """If GITHUB_TOKEN is set, inject it into an HTTPS GitHub URL for auth."""
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        return url
+    parsed = urlparse(url)
+    if parsed.scheme in ("https", "http") and parsed.hostname in (
+        "github.com",
+        "www.github.com",
+    ):
+        return parsed._replace(netloc=f"{token}@{parsed.hostname}").geturl()
+    return url
+
+
 def _clone_or_pull(url: str) -> str:
     """Clone a GitHub repo, or pull if already cloned."""
     owner, repo = _parse_github_source(url)
     dest = CACHE_DIR / f"{owner}_{repo}"
+    auth_url = _authenticated_url(url)
 
-    try:
-        if (dest / ".git").is_dir():
+    if (dest / ".git").is_dir():
+        # Already cloned — update remote URL (token may have changed) and pull
+        try:
             subprocess.run(
-                f"git -C {dest} pull --ff-only",
-                shell=True,
+                ["git", "-C", str(dest), "remote", "set-url", "origin", auth_url],
                 check=True,
                 capture_output=True,
             )
-        else:
+            subprocess.run(
+                ["git", "-C", str(dest), "pull", "--ff-only"],
+                check=True,
+                capture_output=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            logger.warning("git pull failed for '%s', using cached copy: %s", url, exc)
+    else:
+        # Fresh clone required
+        try:
             dest.mkdir(parents=True, exist_ok=True)
             subprocess.run(
-                f"git clone {url} {dest}",
-                shell=True,
+                ["git", "clone", auth_url, str(dest)],
                 check=True,
                 capture_output=True,
             )
-    except subprocess.CalledProcessError as exc:
-        raise RepoError(
-            f"Failed to clone '{url}'. Ensure the URL is correct and git is installed. "
-            f"Details: {exc.stderr}"
-        ) from exc
+        except subprocess.CalledProcessError as exc:
+            detail = _sanitize_git_output(exc.stderr or b"")
+            token = os.environ.get("GITHUB_TOKEN")
+            hint = ""
+            if "403" in detail or "Authentication" in detail:
+                if token:
+                    hint = (
+                        " Your GITHUB_TOKEN may lack access to this repo."
+                        " Ensure it has 'Contents: Read' permission."
+                    )
+                else:
+                    hint = (
+                        " This may be a private repo."
+                        " Set GITHUB_TOKEN with 'Contents: Read' permission."
+                    )
+            elif not token and ("Username" in detail or "could not read" in detail):
+                hint = (
+                    " This may be a private repo."
+                    " Set GITHUB_TOKEN with 'Contents: Read' permission."
+                )
+            raise RepoError(
+                f"Failed to clone '{url}'.{hint} Details: {detail}"
+            ) from exc
 
     return str(dest)

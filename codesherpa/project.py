@@ -144,15 +144,17 @@ def list_projects(conn: oracledb.Connection) -> list[dict]:
     return [_row_to_dict(row) for row in rows]
 
 
-def delete_project(conn: oracledb.Connection, name: str) -> None:
-    """Delete a project and all its associated chunks.
-
-    Raises ProjectNotFoundError if the project does not exist.
-    """
-    project = get_project(conn, name)
-    project_id = project["id"]
-
+def _delete_project_data(conn: oracledb.Connection, project_id: int) -> None:
+    """Delete all data associated with a project ID and the project itself."""
     with conn.cursor() as cursor:
+        cursor.execute(
+            "DELETE FROM EPISODIC_MEMORY WHERE project_id = :1",
+            [project_id],
+        )
+        cursor.execute(
+            "DELETE FROM SEMANTIC_MEMORY WHERE project_id = :1",
+            [project_id],
+        )
         cursor.execute(
             "DELETE FROM CODE_CHUNKS WHERE project_id = :1",
             [project_id],
@@ -161,8 +163,27 @@ def delete_project(conn: oracledb.Connection, name: str) -> None:
             f"DELETE FROM {PROJECTS_TABLE} WHERE id = :1",
             [project_id],
         )
-
     conn.commit()
+
+
+def delete_project(conn: oracledb.Connection, name: str) -> None:
+    """Delete a project and all its associated data.
+
+    Removes code chunks, episodic memory, semantic memory, and the project.
+    Raises ProjectNotFoundError if the project does not exist.
+    """
+    project = get_project(conn, name)
+    _delete_project_data(conn, project["id"])
+
+
+def delete_project_by_id(conn: oracledb.Connection, project_id: int) -> None:
+    """Delete a project by ID and all its associated data.
+
+    Removes code chunks, episodic memory, semantic memory, and the project.
+    Raises ProjectNotFoundError if the project does not exist.
+    """
+    get_project_by_id(conn, project_id)  # raises if not found
+    _delete_project_data(conn, project_id)
 
 
 def update_project_stats(

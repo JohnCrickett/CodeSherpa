@@ -1,7 +1,9 @@
 """FastAPI web interface for CodeSherpa."""
 
+import asyncio
 import json
 import logging
+import queue
 import threading
 import webbrowser
 from collections.abc import Callable
@@ -26,6 +28,7 @@ from codesherpa.project import (
     ProjectExistsError,
     ProjectNotFoundError,
     create_project,
+    delete_project_by_id,
     get_project_by_id,
     list_projects,
     update_project_stats,
@@ -317,6 +320,16 @@ def create_app(
 
         return {"id": project_id, "name": name, "source_path": resolved}
 
+    @app.delete("/api/projects/{project_id}")
+    def api_delete_project(project_id: int):
+        try:
+            get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        delete_project_by_id(conn, project_id)
+        return {"status": "deleted"}
+
     @app.post("/api/projects/{project_id}/ingest")
     def api_ingest(project_id: int):
         try:
@@ -338,38 +351,46 @@ def create_app(
         except RepoError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
-        def event_stream():
+        _SENTINEL = None
+
+        async def event_stream():
             _active_ingestions.add(project_id)
+            q: asyncio.Queue[dict | None] = asyncio.Queue()
+            loop = asyncio.get_event_loop()
+
+            def on_progress(event: dict) -> None:
+                loop.call_soon_threadsafe(q.put_nowait, event)
+
+            def run_ingest() -> None:
+                try:
+                    stats = ingest(
+                        conn, loader.embedder, resolved,
+                        project_id=project_id,
+                        progress_callback=on_progress,
+                    )
+                    file_count = len(walk_directory(resolved))
+                    chunk_count = _count_project_chunks(conn, project_id)
+                    update_project_stats(conn, project_id, file_count, chunk_count)
+                    loop.call_soon_threadsafe(q.put_nowait, {"phase": "complete", "stats": stats})
+                except Exception as exc:
+                    logger.exception("Ingestion failed for project %d", project_id)
+                    loop.call_soon_threadsafe(q.put_nowait, {"phase": "error", "message": str(exc)})
+                finally:
+                    loop.call_soon_threadsafe(q.put_nowait, _SENTINEL)
+                    _active_ingestions.discard(project_id)
+
+            threading.Thread(target=run_ingest, daemon=True).start()
+
             try:
-                events: list[dict] = []
-
-                def on_progress(event: dict) -> None:
-                    events.append(event)
-
-                # Yield progress events as they arrive
-                # Run ingestion synchronously within the generator
-                # and yield events after completion since ingest()
-                # is CPU-bound and not async
-                stats = ingest(
-                    conn, loader.embedder, resolved,
-                    project_id=project_id,
-                    progress_callback=on_progress,
-                )
-
-                # Yield all progress events
-                for event in events:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(q.get(), timeout=15)
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    if event is _SENTINEL:
+                        break
                     yield f"data: {json.dumps(event)}\n\n"
-
-                # Update project stats
-                file_count = len(walk_directory(resolved))
-                chunk_count = _count_project_chunks(conn, project_id)
-                update_project_stats(conn, project_id, file_count, chunk_count)
-
-                yield f"data: {json.dumps({'phase': 'complete', 'stats': stats})}\n\n"
-
-            except Exception as exc:
-                logger.exception("Ingestion failed for project %d", project_id)
-                yield f"data: {json.dumps({'phase': 'error', 'message': str(exc)})}\n\n"
             finally:
                 _active_ingestions.discard(project_id)
 

@@ -26,6 +26,13 @@ services:
       ORACLE_DSN: oracle-db:1521/FREEPDB1
       ORACLE_USER: codesherpa
       ORACLE_PASSWORD: codesherpa
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    deploy:
+      resources:
+        limits:
+          memory: 6g
+    volumes:
+      - repo-cache:/root/.cache/codesherpa
     depends_on:
       oracle-db:
         condition: service_healthy
@@ -41,3 +48,4 @@ services:
 
 volumes:
   oracle-data:
+  repo-cache:
