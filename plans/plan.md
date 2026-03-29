@@ -19,7 +19,7 @@
 | [x] 15 | Unified query classification: single LLM call for all four query types | [task-15-unified-classification.md](../specs/task-15-unified-classification.md) | REQ-CLASS-01 to 03 |
 | [x] 16 | LLM tool calling: iterative codebase exploration via search, read, and list tools | [task-16-llm-tool-calling.md](../specs/task-16-llm-tool-calling.md) | REQ-TOOL-01 to 07 |
 | [x] 17 | Memory management backend: new memory.py functions + API endpoints for list, search, edit, bulk delete | [task-17-memory-backend.md](../specs/task-17-memory-backend.md) | REQ-MEM-05 to 26 |
-| [ ] 18 | Memory management API client: TypeScript functions in api.ts for all memory endpoints | [task-18-memory-api-client.md](../specs/task-18-memory-api-client.md) | REQ-MEM-05 to 24 |
+| [x] 18 | Memory management API client: TypeScript functions in api.ts for all memory endpoints | [task-18-memory-api-client.md](../specs/task-18-memory-api-client.md) | REQ-MEM-05 to 24 |
 | [ ] 19 | Memory management page: MemoryPage.svelte with project selector, display, search, CRUD, bulk delete | [task-19-memory-page.md](../specs/task-19-memory-page.md) | REQ-MEM-01 to 26 |
 
 ## Dependency Order
