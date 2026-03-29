@@ -341,6 +341,44 @@ def _parse_generic(source: str, rel_path: str, language: str) -> list[CodeChunk]
                 end_char=len(source),
             )
         )
+        return chunks
+
+    # Collect top-level code not covered by any function/class chunk
+    # (package declarations, imports, type definitions, constants, etc.)
+    covered_ranges.sort()
+    uncovered_parts: list[str] = []
+    uncovered_start: int | None = None
+    uncovered_end: int | None = None
+    pos = 0
+    for cstart, cend in covered_ranges:
+        if pos < cstart:
+            segment = source[pos:cstart].strip()
+            if segment:
+                if uncovered_start is None:
+                    uncovered_start = pos
+                uncovered_end = cstart
+                uncovered_parts.append(segment)
+        pos = max(pos, cend)
+    # Trailing code after last covered range
+    if pos < len(source):
+        segment = source[pos:].strip()
+        if segment:
+            if uncovered_start is None:
+                uncovered_start = pos
+            uncovered_end = len(source)
+            uncovered_parts.append(segment)
+
+    if uncovered_parts and uncovered_start is not None:
+        chunks.append(
+            CodeChunk(
+                content="\n".join(uncovered_parts),
+                file_path=rel_path,
+                chunk_type="module",
+                language=language,
+                start_char=uncovered_start,
+                end_char=uncovered_end,
+            )
+        )
 
     return chunks
 

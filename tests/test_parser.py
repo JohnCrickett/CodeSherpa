@@ -244,6 +244,28 @@ class TestParseFile:
         assert any("multiply" in c.content for c in func_chunks)
         assert chunks[0].language == "lua"
 
+    def test_go_top_level_code_captured(self, tmp_path):
+        """Go files should capture package, imports, and type definitions as module chunk."""
+        go_file = tmp_path / "main.go"
+        go_file.write_text(
+            'package main\n\n'
+            'import "fmt"\n\n'
+            'type Point struct {\n'
+            '    X, Y float64\n'
+            '}\n\n'
+            'func main() {\n'
+            '    fmt.Println("hello")\n'
+            '}\n'
+        )
+        chunks = parse_file(str(go_file), str(tmp_path))
+        func_chunks = [c for c in chunks if c.chunk_type == "function"]
+        module_chunks = [c for c in chunks if c.chunk_type == "module"]
+        assert len(func_chunks) == 1
+        assert "main" in func_chunks[0].content
+        assert len(module_chunks) == 1
+        assert "package main" in module_chunks[0].content
+        assert 'import "fmt"' in module_chunks[0].content
+
     def test_chunk_contains_complete_code(self, tmp_path):
         """Each chunk should contain a complete, coherent unit of code."""
         py_file = tmp_path / "complete.py"
