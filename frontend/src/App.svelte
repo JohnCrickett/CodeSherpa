@@ -138,7 +138,7 @@
         {#if selectedFile}
           <CodeViewer projectId={selectedProject.id} filePath={selectedFile} {dark} />
         {/if}
-        <QueryPanel projectId={selectedProject.id} {dark} />
+        <QueryPanel projectId={selectedProject.id} {dark} activeFile={selectedFile} />
       </main>
     {/if}
   </div>

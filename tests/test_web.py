@@ -156,6 +156,23 @@ class TestAskEndpoint:
 
         assert resp.status_code == 422
 
+    def test_active_file_prepended_to_question(self, client, mock_conn):
+        from codesherpa.explanation import ExplanationResult
+
+        result = ExplanationResult(explanation="it does stuff", sources=[])
+
+        with patch("codesherpa.web.get_project_by_id", return_value={"id": 1, "name": "proj"}):
+            with patch("codesherpa.web.explain", return_value=result) as mock_explain:
+                client.post(
+                    "/api/projects/1/ask",
+                    json={"question": "What does this file do?", "active_file": "src/main.py"},
+                )
+
+        call_args = mock_explain.call_args
+        question_sent = call_args[1].get("question") or call_args[0][3]
+        assert "src/main.py" in question_sent
+        assert "What does this file do?" in question_sent
+
 
 class TestQueryEndpoint:
     """POST /api/projects/{id}/query returns raw search results without LLM."""

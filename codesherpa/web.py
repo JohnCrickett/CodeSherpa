@@ -15,8 +15,15 @@ from codesherpa.retrieval import hybrid_search
 STATIC_DIR = Path(__file__).parent.parent / "frontend" / "dist"
 
 
+def _lob_output_handler(cursor, metadata):
+    """Convert CLOB columns to strings so they're JSON-serializable."""
+    if metadata.type_code is oracledb.DB_TYPE_CLOB:
+        return cursor.var(oracledb.DB_TYPE_LONG, arraysize=cursor.arraysize)
+
+
 class QuestionRequest(BaseModel):
     question: str
+    active_file: str | None = None
 
 
 def create_app(conn, embedder, llm) -> FastAPI:
@@ -72,10 +79,6 @@ def create_app(conn, embedder, llm) -> FastAPI:
         except ProjectNotFoundError:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        def _lob_output_handler(cursor, metadata):
-            if metadata.type_code is oracledb.DB_TYPE_CLOB:
-                return cursor.var(oracledb.DB_TYPE_LONG, arraysize=cursor.arraysize)
-
         with conn.cursor() as cursor:
             cursor.outputtypehandler = _lob_output_handler
             cursor.execute(
@@ -105,7 +108,28 @@ def create_app(conn, embedder, llm) -> FastAPI:
         except ProjectNotFoundError:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        result = explain(conn, embedder, llm, req.question, project_id=project_id)
+        question = req.question
+        if req.active_file:
+            # Fetch the active file's code to include as direct context
+            with conn.cursor() as cursor:
+                cursor.outputtypehandler = _lob_output_handler
+                cursor.execute(
+                    "SELECT code_text FROM CODE_CHUNKS "
+                    "WHERE project_id = :1 AND file_path = :2 "
+                    "ORDER BY start_char",
+                    [project_id, req.active_file],
+                )
+                rows = cursor.fetchall()
+            if rows:
+                file_code = "\n".join(row[0] for row in rows)
+                question = (
+                    f"The user is currently viewing this file:\n"
+                    f"File: {req.active_file}\n"
+                    f"```\n{file_code}\n```\n\n"
+                    f"Question: {question}"
+                )
+
+        result = explain(conn, embedder, llm, question, project_id=project_id)
         return {
             "explanation": result.explanation,
             "sources": [
