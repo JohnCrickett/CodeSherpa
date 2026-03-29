@@ -45,24 +45,31 @@ def _base_state(**overrides):
 
 
 class TestClassifyQuery:
-    """Tests for query classification into different navigation types."""
+    """Tests for unified query classification via a single LLM call."""
 
     def test_classifies_map_query(self):
-        """A 'map' query is classified as map type."""
-        state = _base_state(query="map")
+        """'map' is classified as map type via LLM."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content="map")
+        state = _base_state(query="map", llm=mock_llm)
         result = classify_query(state)
         assert result["query_type"] == "map"
 
-    def test_classifies_map_query_case_insensitive(self):
-        """Map classification is case-insensitive."""
-        state = _base_state(query="Map")
+    def test_classifies_natural_map_query(self):
+        """'show me the project structure' is classified as map."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content="map")
+        state = _base_state(query="show me the project structure", llm=mock_llm)
         result = classify_query(state)
         assert result["query_type"] == "map"
 
     def test_classifies_follow_up_with_history(self):
-        """A short question with conversation history is a follow-up."""
+        """A referential question with conversation history is a follow-up."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content="follow_up")
         state = _base_state(
-            query="what calls this?",
+            query="what calls this function?",
+            llm=mock_llm,
             conversation_history=[
                 {"query": "explain the parse function", "summary": "parse does X"},
             ],
@@ -72,24 +79,52 @@ class TestClassifyQuery:
 
     def test_classifies_exploration_for_broad_question(self):
         """Broad, system-level questions are classified as exploration."""
-        state = _base_state(
-            query="how does the authentication system work?",
-        )
-        # Mock LLM to return classification
         mock_llm = MagicMock()
         mock_llm.invoke.return_value = MagicMock(content="exploration")
-        state["llm"] = mock_llm
+        state = _base_state(
+            query="how does authentication work?",
+            llm=mock_llm,
+        )
         result = classify_query(state)
         assert result["query_type"] == "exploration"
 
     def test_classifies_specific_question(self):
-        """A specific question with no history is classified as specific."""
-        state = _base_state(query="what does the parse function do?")
+        """A targeted question about a function is classified as specific."""
         mock_llm = MagicMock()
         mock_llm.invoke.return_value = MagicMock(content="specific")
-        state["llm"] = mock_llm
+        state = _base_state(query="what does parse_codebase do?", llm=mock_llm)
         result = classify_query(state)
         assert result["query_type"] == "specific"
+
+    def test_no_follow_up_without_history(self):
+        """Without conversation history, the LLM response is never follow_up."""
+        mock_llm = MagicMock()
+        # Even if LLM returns follow_up, without history it should fall back
+        mock_llm.invoke.return_value = MagicMock(content="follow_up")
+        state = _base_state(
+            query="what calls this function?",
+            llm=mock_llm,
+            conversation_history=[],
+        )
+        result = classify_query(state)
+        assert result["query_type"] != "follow_up"
+
+    def test_classification_prompt_includes_history(self):
+        """When conversation history is present, it is included in the LLM prompt."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content="follow_up")
+        state = _base_state(
+            query="what calls this?",
+            llm=mock_llm,
+            conversation_history=[
+                {"query": "explain parse", "summary": "parse does X"},
+            ],
+        )
+        classify_query(state)
+        # Check the prompt sent to the LLM contains the history
+        call_args = mock_llm.invoke.call_args[0][0]
+        prompt_text = call_args[0].content
+        assert "explain parse" in prompt_text
 
 
 class TestHandleMapQuery:
@@ -294,7 +329,10 @@ class TestBuildNavigationGraph:
         ]
 
         mock_llm = MagicMock()
-        mock_llm.invoke.return_value = MagicMock(content="Codebase map: Python project")
+        mock_llm.invoke.side_effect = [
+            MagicMock(content="map"),  # classify
+            MagicMock(content="Codebase map: Python project"),  # handle_map
+        ]
 
         state = _base_state(query="map", conn=mock_conn, llm=mock_llm)
         graph = build_navigation_graph()
@@ -310,7 +348,10 @@ class TestBuildNavigationGraph:
     def test_follow_up_routes_correctly(self):
         """A follow-up question with history routes to multi-step retrieval."""
         mock_llm = MagicMock()
-        mock_llm.invoke.return_value = MagicMock(content="The callers are...")
+        mock_llm.invoke.side_effect = [
+            MagicMock(content="follow_up"),  # classify
+            MagicMock(content="The callers are..."),  # multi_step_retrieve
+        ]
 
         state = _base_state(
             query="what calls this?",

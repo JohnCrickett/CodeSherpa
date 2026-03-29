@@ -26,13 +26,6 @@ from codesherpa.retrieval import hybrid_search
 
 logger = logging.getLogger(__name__)
 
-# Follow-up indicator words that suggest a query builds on prior context
-_FOLLOW_UP_INDICATORS = re.compile(
-    r"\b(this|that|it|these|those|the same|above|previous|calls?\s+this|"
-    r"where\s+is\s+(it|this|that)\s+used|who\s+calls|what\s+calls)\b",
-    re.IGNORECASE,
-)
-
 NAVIGATION_SYSTEM_PROMPT = """\
 You are CodeSherpa, an AI assistant that explains code in plain language.
 
@@ -50,14 +43,20 @@ to answer — do not say you cannot answer if context is present."""
 
 CLASSIFY_PROMPT = """\
 Classify the following user question about a codebase into exactly one category.
-Reply with ONLY one word: "exploration" or "specific".
+Reply with ONLY one word: "map", "follow_up", "exploration", or "specific".
 
+- "map": the user wants a high-level overview or map of the project structure
+  (e.g., "map", "show me the project structure", "give me an overview")
+- "follow_up": the user is asking a question that builds on previous conversation
+  context, using referential language like "this", "that", "it", "the same"
+  (e.g., "what calls this function?", "where is it used?", "tell me more about that")
+  NOTE: Only classify as "follow_up" when conversation history is present.
 - "exploration": broad questions about how a system, feature, or flow works
   (e.g., "how does authentication work?", "explain the data pipeline")
 - "specific": targeted questions about a particular function, class, or file
   (e.g., "what does parse_codebase do?", "explain the SearchResult class")
 
-Question: {query}"""
+{history}Question: {query}"""
 
 MAP_SYSTEM_PROMPT = """\
 You are CodeSherpa. Summarise the high-level structure of a codebase given the
@@ -207,25 +206,42 @@ def check_memory(state: NavigationState) -> dict:
 
 
 def classify_query(state: NavigationState) -> dict:
-    """Classify the query into map, follow_up, exploration, or specific."""
+    """Classify the query into map, follow_up, exploration, or specific.
+
+    Uses a single LLM call with conversation history context to determine
+    the query type. If the LLM returns follow_up but no conversation history
+    is present, falls back to specific.
+    """
     _emit_progress(state, "Analyzing question...")
     query = state["query"].strip()
+    history = state.get("conversation_history", [])
 
-    # Map query: exact match
-    if query.lower() == "map":
-        return {"query_type": "map"}
+    # Build history context for the prompt
+    history_text = ""
+    if history:
+        parts = ["Conversation history (last 3 entries):"]
+        for entry in history[-3:]:
+            parts.append(f"- Q: {entry['query']}")
+            if "summary" in entry:
+                parts.append(f"  A: {entry['summary']}")
+            if "files" in entry:
+                parts.append(f"  Files: {', '.join(entry['files'])}")
+        history_text = "\n".join(parts) + "\n\n"
 
-    # Follow-up: has conversation history and uses referential language
-    if state["conversation_history"] and _FOLLOW_UP_INDICATORS.search(query):
-        return {"query_type": "follow_up"}
-
-    # Use LLM to distinguish exploration vs specific
     messages = [
-        HumanMessage(content=CLASSIFY_PROMPT.format(query=query)),
+        HumanMessage(content=CLASSIFY_PROMPT.format(query=query, history=history_text)),
     ]
     response = state["llm"].invoke(messages)
     classification = response.content.strip().lower()
 
+    # Guard: follow_up is only valid when conversation history exists
+    if "follow_up" in classification:
+        if history:
+            return {"query_type": "follow_up"}
+        return {"query_type": "specific"}
+
+    if "map" in classification:
+        return {"query_type": "map"}
     if "exploration" in classification:
         return {"query_type": "exploration"}
     return {"query_type": "specific"}
@@ -292,8 +308,193 @@ def handle_map_query(state: NavigationState) -> dict:
     }
 
 
+# Keywords / builtins to skip in function-call extraction (language-independent)
+_SKIP_CALLS = {
+    "if", "for", "while", "return", "print", "len", "range", "str",
+    "int", "float", "list", "dict", "set", "tuple", "type", "isinstance",
+    "hasattr", "getattr", "setattr", "super", "property", "staticmethod",
+    "classmethod", "True", "False", "None", "not", "and", "or", "in",
+    "class", "def", "import", "from", "as", "with", "assert", "raise",
+    "except", "finally", "try", "yield", "pass", "break", "continue",
+    "del", "global", "nonlocal", "lambda", "elif", "else",
+}
+
+
+def _extract_python_deps(
+    code: str, file_path: str, deps: list[dict], seen: set[tuple[str, str]],
+) -> None:
+    """Extract Python imports and class inheritance."""
+    # Python imports: import X / from X import Y
+    for match in re.finditer(
+        r"^(?:from\s+([\w.]+)\s+import\s+[\w, ]+|import\s+([\w., ]+))",
+        code,
+        re.MULTILINE,
+    ):
+        target = match.group(1) or match.group(2)
+        for t in target.split(","):
+            t = t.strip()
+            if t:
+                key = ("import", t)
+                if key not in seen:
+                    seen.add(key)
+                    deps.append({"type": "import", "target": t, "source_file": file_path})
+
+    # Class inheritance: class X(Parent)
+    for match in re.finditer(r"class\s+\w+\(([^)]+)\)", code):
+        parents = match.group(1)
+        for parent in parents.split(","):
+            parent = parent.strip()
+            if parent and parent not in ("object",):
+                key = ("inherits", parent)
+                if key not in seen:
+                    seen.add(key)
+                    deps.append({
+                        "type": "inherits", "target": parent,
+                        "source_file": file_path,
+                    })
+
+
+def _extract_js_ts_deps(
+    code: str, file_path: str, deps: list[dict], seen: set[tuple[str, str]],
+) -> None:
+    """Extract JavaScript / TypeScript imports."""
+    # ES module: import ... from 'pkg'  or  import ... from "pkg"
+    for match in re.finditer(r"""import\s+.+?\s+from\s+['"]([^'"]+)['"]""", code):
+        target = match.group(1)
+        key = ("import", target)
+        if key not in seen:
+            seen.add(key)
+            deps.append({"type": "import", "target": target, "source_file": file_path})
+
+    # CommonJS: require('pkg')  or  require("pkg")
+    for match in re.finditer(r"""require\(\s*['"]([^'"]+)['"]\s*\)""", code):
+        target = match.group(1)
+        key = ("import", target)
+        if key not in seen:
+            seen.add(key)
+            deps.append({"type": "import", "target": target, "source_file": file_path})
+
+    # Dynamic import: import('pkg')
+    for match in re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", code):
+        target = match.group(1)
+        key = ("import", target)
+        if key not in seen:
+            seen.add(key)
+            deps.append({"type": "import", "target": target, "source_file": file_path})
+
+
+def _extract_go_deps(
+    code: str, file_path: str, deps: list[dict], seen: set[tuple[str, str]],
+) -> None:
+    """Extract Go import statements (single and multi-line blocks)."""
+    # Single-line: import "fmt"
+    for match in re.finditer(r'^import\s+"([^"]+)"', code, re.MULTILINE):
+        target = match.group(1)
+        key = ("import", target)
+        if key not in seen:
+            seen.add(key)
+            deps.append({"type": "import", "target": target, "source_file": file_path})
+
+    # Multi-line: import ( "fmt"\n"os" )
+    for block_match in re.finditer(r"import\s*\((.*?)\)", code, re.DOTALL):
+        block = block_match.group(1)
+        for match in re.finditer(r'"([^"]+)"', block):
+            target = match.group(1)
+            key = ("import", target)
+            if key not in seen:
+                seen.add(key)
+                deps.append({"type": "import", "target": target, "source_file": file_path})
+
+
+def _extract_java_deps(
+    code: str, file_path: str, deps: list[dict], seen: set[tuple[str, str]],
+) -> None:
+    """Extract Java imports and class inheritance (extends / implements)."""
+    # Java imports: import com.example.Foo;
+    for match in re.finditer(r"^import\s+([\w.]+)\s*;", code, re.MULTILINE):
+        target = match.group(1)
+        key = ("import", target)
+        if key not in seen:
+            seen.add(key)
+            deps.append({"type": "import", "target": target, "source_file": file_path})
+
+    # Java inheritance: class X extends Y
+    for match in re.finditer(r"class\s+\w+\s+extends\s+(\w+)", code):
+        target = match.group(1)
+        key = ("inherits", target)
+        if key not in seen:
+            seen.add(key)
+            deps.append({"type": "inherits", "target": target, "source_file": file_path})
+
+    # Java interfaces: class X implements A, B
+    for match in re.finditer(r"class\s+\w+(?:\s+extends\s+\w+)?\s+implements\s+([\w\s,]+)", code):
+        interfaces = match.group(1)
+        for iface in interfaces.split(","):
+            iface = iface.strip()
+            if iface:
+                key = ("inherits", iface)
+                if key not in seen:
+                    seen.add(key)
+                    deps.append({
+                        "type": "inherits", "target": iface,
+                        "source_file": file_path,
+                    })
+
+
+def _extract_generic_deps(
+    code: str, file_path: str, deps: list[dict], seen: set[tuple[str, str]],
+) -> None:
+    """Generic fallback: detect import, require, include, use statements."""
+    # import "X" / import 'X' / import X
+    for match in re.finditer(
+        r"""^import\s+['"]?([^\s'";\n]+)['"]?\s*;?""", code, re.MULTILINE,
+    ):
+        target = match.group(1)
+        key = ("import", target)
+        if key not in seen:
+            seen.add(key)
+            deps.append({"type": "import", "target": target, "source_file": file_path})
+
+    # require('X') / require("X")
+    for match in re.finditer(r"""require\(\s*['"]([^'"]+)['"]\s*\)""", code):
+        target = match.group(1)
+        key = ("import", target)
+        if key not in seen:
+            seen.add(key)
+            deps.append({"type": "import", "target": target, "source_file": file_path})
+
+    # #include <X> / #include "X"
+    for match in re.finditer(r'^#include\s+[<"]([^>"]+)[>"]', code, re.MULTILINE):
+        target = match.group(1)
+        key = ("import", target)
+        if key not in seen:
+            seen.add(key)
+            deps.append({"type": "import", "target": target, "source_file": file_path})
+
+    # use X; (e.g. Rust)
+    for match in re.finditer(r"^use\s+([\w:]+(?:::\w+)*)\s*;", code, re.MULTILINE):
+        target = match.group(1)
+        key = ("import", target)
+        if key not in seen:
+            seen.add(key)
+            deps.append({"type": "import", "target": target, "source_file": file_path})
+
+
+# Map language names to their extraction functions
+_LANGUAGE_EXTRACTORS: dict[str, Callable] = {
+    "python": _extract_python_deps,
+    "javascript": _extract_js_ts_deps,
+    "typescript": _extract_js_ts_deps,
+    "go": _extract_go_deps,
+    "java": _extract_java_deps,
+}
+
+
 def extract_dependencies(chunks: list) -> list[dict]:
     """Extract dependency references (imports, calls, inheritance) from code chunks.
+
+    Dispatches to language-specific extractors based on each chunk's language
+    field. Falls back to a generic extractor for unrecognised languages.
 
     Returns a list of dicts with keys: type, target, source_file.
     """
@@ -303,47 +504,13 @@ def extract_dependencies(chunks: list) -> list[dict]:
     for chunk in chunks:
         code = chunk.code_text
         file_path = chunk.file_path
+        language = getattr(chunk, "language", "") or ""
 
-        # Python imports: import X / from X import Y
-        for match in re.finditer(
-            r"^(?:from\s+([\w.]+)\s+import\s+[\w, ]+|import\s+([\w., ]+))",
-            code,
-            re.MULTILINE,
-        ):
-            target = match.group(1) or match.group(2)
-            for t in target.split(","):
-                t = t.strip()
-                if t:
-                    key = ("import", t)
-                    if key not in seen:
-                        seen.add(key)
-                        deps.append({"type": "import", "target": t, "source_file": file_path})
+        # Dispatch to language-specific extractor or generic fallback
+        extractor = _LANGUAGE_EXTRACTORS.get(language.lower(), _extract_generic_deps)
+        extractor(code, file_path, deps, seen)
 
-        # Class inheritance: class X(Parent)
-        for match in re.finditer(r"class\s+\w+\(([^)]+)\)", code):
-            parents = match.group(1)
-            for parent in parents.split(","):
-                parent = parent.strip()
-                if parent and parent not in ("object",):
-                    key = ("inherits", parent)
-                    if key not in seen:
-                        seen.add(key)
-                        deps.append({
-                            "type": "inherits", "target": parent,
-                            "source_file": file_path,
-                        })
-
-        # Function calls: name(...)
-        # Exclude common keywords and builtins
-        _SKIP_CALLS = {
-            "if", "for", "while", "return", "print", "len", "range", "str",
-            "int", "float", "list", "dict", "set", "tuple", "type", "isinstance",
-            "hasattr", "getattr", "setattr", "super", "property", "staticmethod",
-            "classmethod", "True", "False", "None", "not", "and", "or", "in",
-            "class", "def", "import", "from", "as", "with", "assert", "raise",
-            "except", "finally", "try", "yield", "pass", "break", "continue",
-            "del", "global", "nonlocal", "lambda", "elif", "else",
-        }
+        # Function calls: name(...) — language-independent
         for match in re.finditer(r"\b([a-zA-Z_]\w*)\s*\(", code):
             name = match.group(1)
             if name not in _SKIP_CALLS and not name[0].isupper():
