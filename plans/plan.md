@@ -14,6 +14,10 @@
 | [x] 10 | Ingestion progress API: project creation endpoint, SSE ingestion streaming, progress callback | [task-10-ingestion-progress-api.md](../specs/task-10-ingestion-progress-api.md) | REQ-WEB-02 to 16 |
 | [x] 11 | Projects page: project list, create form, ingest/re-ingest with progress, navigation | [task-11-projects-page.md](../specs/task-11-projects-page.md) | REQ-WEB-01 to 19 |
 | [x] 12 | Chat UI: ChatGPT-style conversation, follow-up mode, clickable sources, new layout | [task-12-chat-ui.md](../specs/task-12-chat-ui.md) | REQ-CHAT-01 to 08 |
+| [ ] 13 | Expanded key file detection: broaden patterns for build, config, and deployment files | [task-13-expanded-key-files.md](../specs/task-13-expanded-key-files.md) | REQ-KEY-01 to 03 |
+| [ ] 14 | Language-aware dependency extraction: multi-language import/inheritance patterns | [task-14-language-aware-deps.md](../specs/task-14-language-aware-deps.md) | REQ-DEP-01 to 03 |
+| [ ] 15 | Unified query classification: single LLM call for all four query types | [task-15-unified-classification.md](../specs/task-15-unified-classification.md) | REQ-CLASS-01 to 03 |
+| [ ] 16 | LLM tool calling: iterative codebase exploration via search, read, and list tools | [task-16-llm-tool-calling.md](../specs/task-16-llm-tool-calling.md) | REQ-TOOL-01 to 07 |
 
 ## Dependency Order
 
@@ -26,9 +30,24 @@
 07 → 08 → 09
      │
      └→ 12
+
+09 → 13 (no dependencies between 13, 14, 15)
+09 → 14
+09 → 15 → 16
 ```
 
-### Notes
+### Phase 2 Notes (Tasks 13–16)
+
+- **Tasks 13, 14** are independent leaf tasks that can be done in any order or in parallel. Both modify `navigation.py` but touch different functions.
+- **Task 15** (unified classification) should be done before Task 16 because the tool-calling agent replaces the handler nodes that classification routes to; having clean classification first simplifies integration.
+- **Task 16** (LLM tool calling) is the largest task and depends on 15 being complete. It replaces `multi_step_retrieve()` and `plan_exploration()` with a tool-calling agent loop, so those handlers must not be in flux.
+
+```
+Recommended order: 13 → 14 → 15 → 16
+(13 and 14 can be parallelised)
+```
+
+### Phase 1 Notes
 
 - **Tasks 01-05** are strictly sequential: each builds directly on the previous (setup → parse → store → search → explain).
 - **Task 06** (project management) can begin after Task 04 since it wraps existing ingestion and retrieval with project isolation. However, it should incorporate Task 05's explanation capability before completion.
