@@ -557,8 +557,8 @@ def _format_history_context(history: list[dict]) -> str:
 TOOL_CALLING_SYSTEM_PROMPT = """\
 You are CodeSherpa, an AI assistant that explains code in plain language.
 
-You have access to tools to explore a codebase. Use them to gather the context
-you need before answering the user's question.
+You have access to tools to explore a codebase. You MUST use at least one tool
+before answering — never answer from memory alone.
 
 Available tools:
 - search_code: Search for code matching a query (semantic + full-text hybrid search)
@@ -566,12 +566,16 @@ Available tools:
 - list_files: List files matching a glob pattern (e.g. "*.py", "src/**/*.ts")
 
 Strategy:
-1. Start by searching for code related to the question
-2. If you need more context, read specific files or list files by pattern
-3. Once you have enough context, provide a clear, cited answer
-4. Always cite specific file paths and function/class names in your answer
+1. ALWAYS call at least one tool before answering. Start by searching for code \
+related to the question, or read key files (README, entry points, config files) \
+if the question is broad or about the project itself.
+2. If search results are insufficient, try reading specific files or listing files \
+by pattern to find what you need.
+3. Once you have enough context, provide a clear, cited answer.
+4. Always cite specific file paths and function/class names in your answer.
 
 Rules:
+- NEVER answer without first using tools to explore the codebase.
 - Explain code clearly, citing specific file paths and function/class names.
 - When explaining relationships between parts of the codebase, reference both sides.
 - If the provided context is insufficient to fully answer, say what you can determine
@@ -579,6 +583,36 @@ Rules:
 - Keep explanations concise and accurate."""
 
 DEFAULT_MAX_ITERATIONS = 10
+
+
+def _glob_match(file_path: str, pattern: str) -> bool:
+    """Match a file path against a glob pattern with proper ** support.
+
+    ``fnmatch.fnmatch`` treats ``**`` as a regular wildcard which breaks
+    recursive glob patterns:
+    - ``**/*.md`` misses root-level files like ``README.md``
+    - ``src/**/*.py`` misses direct children like ``src/main.py``
+
+    This helper fixes that by also trying the pattern with ``**/`` collapsed,
+    and by matching simple (no-slash) patterns against the basename so that
+    ``*.py`` finds files at any depth.
+    """
+    # Simple pattern (no path separator): match against the filename only
+    if "/" not in pattern:
+        basename = file_path.rsplit("/", 1)[-1] if "/" in file_path else file_path
+        return fnmatch.fnmatch(basename, pattern)
+
+    # Try the pattern as-is first
+    if fnmatch.fnmatch(file_path, pattern):
+        return True
+
+    # Fix ** handling: collapse **/ and retry so root-level / direct children match
+    if "**/" in pattern:
+        parts = pattern.split("**/", 1)
+        flat_pattern = parts[0] + parts[1]
+        return fnmatch.fnmatch(file_path, flat_pattern)
+
+    return False
 
 
 def _build_tools(state: NavigationState) -> list:
@@ -619,7 +653,7 @@ def _build_tools(state: NavigationState) -> list:
         Args:
             pattern: Glob pattern to filter files (e.g. '*.py', 'src/**/*.ts').
         """
-        matched = [f for f in file_tree if fnmatch.fnmatch(f, pattern)]
+        matched = [f for f in file_tree if _glob_match(f, pattern)]
         if not matched:
             return f"No files matching '{pattern}'."
         return "\n".join(matched)
@@ -679,6 +713,15 @@ def tool_calling_agent(
     file_tree = state.get("file_tree", [])
     if file_tree:
         prompt_parts.append(_format_file_tree(file_tree))
+
+    # Auto-read key project files (README, entry points, config) as baseline context
+    if file_tree:
+        key_content = _auto_read_key_files(
+            state["conn"], state["project_id"], file_tree,
+            progress_callback=state.get("progress_callback"),
+        )
+        if key_content:
+            prompt_parts.append(key_content)
 
     # Add memory context
     if state["episodic_memories"] or state["semantic_memories"]:

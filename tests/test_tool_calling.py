@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from langchain_core.messages import AIMessage, ToolMessage
 
 from codesherpa.navigation import (
+    _glob_match,
     build_navigation_graph,
     tool_calling_agent,
 )
@@ -245,6 +246,39 @@ class TestToolCallingAgentLoop:
         assert "JWT" in result["response"].explanation
 
 
+class TestToolCallingKeyFiles:
+    """Tests that the tool-calling agent includes key file context."""
+
+    def test_includes_key_files_in_initial_prompt(self):
+        """Key project files (README, etc.) are auto-read and included in the system prompt."""
+        mock_llm = MagicMock()
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = [("# My Project\nBuilt with Flask.",)]
+
+        # LLM returns final answer immediately (no tool calls)
+        ai_final = AIMessage(content="The project is built with Flask.")
+        mock_llm.bind_tools.return_value = mock_llm
+        mock_llm.invoke.return_value = ai_final
+
+        state = _base_state(
+            query="What is this project based on?",
+            llm=mock_llm,
+            conn=mock_conn,
+            file_tree=["README.md", "src/app.py", "src/utils.py"],
+        )
+        result = tool_calling_agent(state)
+
+        assert result["response"] is not None
+        # Check the system message includes README content
+        call_args = mock_llm.invoke.call_args[0][0]
+        system_text = call_args[0].content
+        assert "My Project" in system_text
+        assert "README.md" in system_text
+
+
 class TestToolCallingGraphIntegration:
     """Tests for tool-calling agent integration into the navigation graph."""
 
@@ -360,3 +394,51 @@ class TestToolCallingGraphIntegration:
 
         assert result["response"] is not None
         assert result["response"].explanation == "f returns 1"
+
+
+class TestGlobMatch:
+    """Tests for _glob_match with proper ** support."""
+
+    def test_simple_extension_matches_root_files(self):
+        """*.md matches root-level files like README.md."""
+        assert _glob_match("README.md", "*.md")
+
+    def test_simple_extension_matches_nested_files(self):
+        """*.py matches nested files like src/main.py."""
+        assert _glob_match("src/main.py", "*.py")
+
+    def test_simple_extension_excludes_wrong_type(self):
+        """*.py does not match .md files."""
+        assert not _glob_match("README.md", "*.py")
+
+    def test_double_star_matches_root_files(self):
+        """**/*.md matches root-level files like README.md."""
+        assert _glob_match("README.md", "**/*.md")
+
+    def test_double_star_matches_nested_files(self):
+        """**/*.py matches nested files like src/auth/login.py."""
+        assert _glob_match("src/auth/login.py", "**/*.py")
+
+    def test_prefixed_double_star_matches_direct_children(self):
+        """src/**/*.py matches direct children like src/main.py."""
+        assert _glob_match("src/main.py", "src/**/*.py")
+
+    def test_prefixed_double_star_matches_deep_children(self):
+        """src/**/*.py matches deeply nested files."""
+        assert _glob_match("src/auth/middleware.py", "src/**/*.py")
+
+    def test_prefixed_double_star_excludes_other_dirs(self):
+        """src/**/*.py does not match files outside src/."""
+        assert not _glob_match("lib/utils.py", "src/**/*.py")
+
+    def test_exact_filename_match(self):
+        """README.md matches itself."""
+        assert _glob_match("README.md", "README.md")
+
+    def test_path_pattern_without_double_star(self):
+        """src/*.py matches files in src/ directory."""
+        assert _glob_match("src/main.py", "src/*.py")
+
+    def test_name_prefix_pattern(self):
+        """README* matches README.md."""
+        assert _glob_match("README.md", "README*")
