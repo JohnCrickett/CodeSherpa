@@ -1,5 +1,7 @@
 """FastAPI web interface for CodeSherpa."""
 
+import json
+import logging
 import threading
 import webbrowser
 from collections.abc import Callable
@@ -7,12 +9,25 @@ from pathlib import Path
 
 import oracledb
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from codesherpa.explanation import explain
-from codesherpa.project import ProjectNotFoundError, get_project_by_id, list_projects
+from codesherpa.ingestion import ingest
+from codesherpa.parser import walk_directory
+from codesherpa.project import (
+    ProjectExistsError,
+    ProjectNotFoundError,
+    create_project,
+    get_project_by_id,
+    list_projects,
+    update_project_stats,
+)
+from codesherpa.repo import RepoError, resolve_source
 from codesherpa.retrieval import hybrid_search
+
+logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent.parent / "frontend" / "dist"
 
@@ -26,6 +41,15 @@ def _lob_output_handler(cursor, metadata):
 class QuestionRequest(BaseModel):
     question: str
     active_file: str | None = None
+
+
+class CreateProjectRequest(BaseModel):
+    name: str
+    source: str
+
+
+# Tracks project IDs currently being ingested to prevent concurrent runs.
+_active_ingestions: set[int] = set()
 
 
 class _LazyLoader:
@@ -234,11 +258,106 @@ def create_app(
             for r in results
         ]
 
+    @app.post("/api/projects", status_code=201)
+    def api_create_project(req: CreateProjectRequest):
+        name = req.name.strip()
+        source = req.source.strip()
+
+        if not name:
+            raise HTTPException(status_code=400, detail="Project name must not be empty.")
+        if not source:
+            raise HTTPException(status_code=400, detail="Source path must not be empty.")
+
+        try:
+            resolved = resolve_source(source)
+        except RepoError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        try:
+            project_id = create_project(conn, name, resolved)
+        except ProjectExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+        return {"id": project_id, "name": name, "source_path": resolved}
+
+    @app.post("/api/projects/{project_id}/ingest")
+    def api_ingest(project_id: int):
+        try:
+            project = get_project_by_id(conn, project_id)
+        except ProjectNotFoundError:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        if project_id in _active_ingestions:
+            raise HTTPException(
+                status_code=409,
+                detail="Ingestion is already running for this project.",
+            )
+
+        source_path = project["source_path"]
+
+        # Re-resolve source to pull latest for GitHub repos (REQ-WEB-15)
+        try:
+            resolved = resolve_source(source_path)
+        except RepoError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        def event_stream():
+            _active_ingestions.add(project_id)
+            try:
+                events: list[dict] = []
+
+                def on_progress(event: dict) -> None:
+                    events.append(event)
+
+                # Yield progress events as they arrive
+                # Run ingestion synchronously within the generator
+                # and yield events after completion since ingest()
+                # is CPU-bound and not async
+                stats = ingest(
+                    conn, loader.embedder, resolved,
+                    project_id=project_id,
+                    progress_callback=on_progress,
+                )
+
+                # Yield all progress events
+                for event in events:
+                    yield f"data: {json.dumps(event)}\n\n"
+
+                # Update project stats
+                file_count = len(walk_directory(resolved))
+                chunk_count = _count_project_chunks(conn, project_id)
+                update_project_stats(conn, project_id, file_count, chunk_count)
+
+                yield f"data: {json.dumps({'phase': 'complete', 'stats': stats})}\n\n"
+
+            except Exception as exc:
+                logger.exception("Ingestion failed for project %d", project_id)
+                yield f"data: {json.dumps({'phase': 'error', 'message': str(exc)})}\n\n"
+            finally:
+                _active_ingestions.discard(project_id)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     # Serve frontend static files if the build directory exists
     if STATIC_DIR.is_dir():
         app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
     return app
+
+
+def _count_project_chunks(conn: oracledb.Connection, project_id: int) -> int:
+    """Return the total number of chunks stored for a project."""
+    with conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT COUNT(*) FROM CODE_CHUNKS WHERE project_id = :1",
+            [project_id],
+        )
+        row = cursor.fetchone()
+        return row[0] if row else 0
 
 
 def open_browser(url: str) -> None:

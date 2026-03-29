@@ -244,6 +244,247 @@ class TestFileContent:
         assert resp.status_code == 404
 
 
+class TestCreateProject:
+    """POST /api/projects creates a new project."""
+
+    def test_creates_project_returns_201(self, client, mock_conn):
+        with patch("codesherpa.web.resolve_source", return_value="/resolved/path"):
+            with patch("codesherpa.web.create_project", return_value=42):
+                resp = client.post(
+                    "/api/projects",
+                    json={"name": "my-project", "source": "/some/path"},
+                )
+
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["id"] == 42
+        assert data["name"] == "my-project"
+        assert data["source_path"] == "/resolved/path"
+
+    def test_duplicate_name_returns_409(self, client, mock_conn):
+        from codesherpa.project import ProjectExistsError
+
+        with patch("codesherpa.web.resolve_source", return_value="/resolved/path"):
+            with patch(
+                "codesherpa.web.create_project",
+                side_effect=ProjectExistsError("exists"),
+            ):
+                resp = client.post(
+                    "/api/projects",
+                    json={"name": "dup", "source": "/some/path"},
+                )
+
+        assert resp.status_code == 409
+        assert "exists" in resp.json()["detail"].lower()
+
+    def test_empty_name_returns_400(self, client, mock_conn):
+        resp = client.post(
+            "/api/projects",
+            json={"name": "", "source": "/some/path"},
+        )
+        assert resp.status_code == 400
+
+    def test_empty_source_returns_400(self, client, mock_conn):
+        resp = client.post(
+            "/api/projects",
+            json={"name": "proj", "source": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_invalid_source_returns_400(self, client, mock_conn):
+        from codesherpa.repo import RepoError
+
+        with patch(
+            "codesherpa.web.resolve_source",
+            side_effect=RepoError("Path does not exist"),
+        ):
+            resp = client.post(
+                "/api/projects",
+                json={"name": "proj", "source": "/nonexistent"},
+            )
+
+        assert resp.status_code == 400
+        assert "path" in resp.json()["detail"].lower()
+
+    def test_github_url_source_resolves(self, client, mock_conn):
+        mock_resolve = patch("codesherpa.web.resolve_source", return_value="/cache/owner_repo")
+        with mock_resolve as mock_resolve:
+            with patch("codesherpa.web.create_project", return_value=1):
+                resp = client.post(
+                    "/api/projects",
+                    json={"name": "gh-proj", "source": "https://github.com/owner/repo"},
+                )
+
+        assert resp.status_code == 201
+        mock_resolve.assert_called_once_with("https://github.com/owner/repo")
+
+
+class TestIngestEndpoint:
+    """POST /api/projects/{id}/ingest streams ingestion progress via SSE."""
+
+    def test_returns_404_for_missing_project(self, client, mock_conn):
+        from codesherpa.project import ProjectNotFoundError
+
+        with patch(
+            "codesherpa.web.get_project_by_id",
+            side_effect=ProjectNotFoundError("not found"),
+        ):
+            resp = client.post("/api/projects/999/ingest")
+
+        assert resp.status_code == 404
+
+    def test_returns_sse_content_type(self, client, mock_conn, mock_embedder):
+        project = {"id": 1, "name": "proj", "source_path": "/src"}
+        with patch("codesherpa.web.get_project_by_id", return_value=project):
+            with patch("codesherpa.web.resolve_source", return_value="/src"):
+                with patch("codesherpa.web.ingest", return_value={
+                    "chunks_stored": 5, "files_skipped": 0,
+                    "files_updated": 0, "files_deleted": 0,
+                }):
+                    with patch("codesherpa.web.update_project_stats"):
+                        with patch("codesherpa.web.walk_directory", return_value=["a.py"]):
+                            with patch("codesherpa.web._count_project_chunks", return_value=5):
+                                resp = client.post("/api/projects/1/ingest")
+
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+
+    def test_streams_complete_event_with_stats(self, client, mock_conn, mock_embedder):
+        project = {"id": 1, "name": "proj", "source_path": "/src"}
+        stats = {
+            "chunks_stored": 10, "files_skipped": 2,
+            "files_updated": 1, "files_deleted": 0,
+        }
+        with patch("codesherpa.web.get_project_by_id", return_value=project):
+            with patch("codesherpa.web.resolve_source", return_value="/src"):
+                with patch("codesherpa.web.ingest", return_value=stats):
+                    with patch("codesherpa.web.update_project_stats"):
+                        with patch("codesherpa.web.walk_directory", return_value=["a.py"] * 3):
+                            with patch("codesherpa.web._count_project_chunks", return_value=10):
+                                resp = client.post("/api/projects/1/ingest")
+
+        assert resp.status_code == 200
+        body = resp.text
+        assert "complete" in body
+        assert "chunks_stored" in body
+
+    def test_concurrent_ingestion_returns_409(self, client, mock_conn, mock_embedder):
+        from codesherpa.web import _active_ingestions
+
+        project = {"id": 1, "name": "proj", "source_path": "/src"}
+        _active_ingestions.add(1)
+        try:
+            with patch("codesherpa.web.get_project_by_id", return_value=project):
+                resp = client.post("/api/projects/1/ingest")
+
+            assert resp.status_code == 409
+            assert "already" in resp.json()["detail"].lower()
+        finally:
+            _active_ingestions.discard(1)
+
+    def test_streams_error_event_on_failure(self, client, mock_conn, mock_embedder):
+        project = {"id": 1, "name": "proj", "source_path": "/src"}
+        with patch("codesherpa.web.get_project_by_id", return_value=project):
+            with patch("codesherpa.web.resolve_source", return_value="/src"):
+                with patch("codesherpa.web.ingest", side_effect=RuntimeError("Embedding failed")):
+                    resp = client.post("/api/projects/1/ingest")
+
+        assert resp.status_code == 200  # SSE stream still returns 200
+        body = resp.text
+        assert "error" in body
+        assert "Embedding failed" in body
+
+
+class TestIngestProgressCallback:
+    """The ingest() function invokes the progress callback at each phase."""
+
+    def test_callback_receives_parsing_event(self, tmp_path):
+        from codesherpa.ingestion import ingest
+
+        (tmp_path / "a.py").write_text("x = 1\n")
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = []
+        mock_cursor.fetchone.return_value = [0]
+
+        mock_embedder = MagicMock()
+        mock_embedder.embed_batch.return_value = [[0.1] * 768]
+
+        events = []
+        ingest(mock_conn, mock_embedder, str(tmp_path), progress_callback=events.append)
+
+        phases = [e["phase"] for e in events]
+        assert "parsing" in phases
+
+    def test_callback_receives_embedding_events(self, tmp_path):
+        from codesherpa.ingestion import ingest
+
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = []
+        mock_cursor.fetchone.return_value = [0]
+
+        mock_embedder = MagicMock()
+        mock_embedder.embed_batch.return_value = [[0.1] * 768]
+
+        events = []
+        ingest(mock_conn, mock_embedder, str(tmp_path), progress_callback=events.append)
+
+        embedding_events = [e for e in events if e["phase"] == "embedding"]
+        assert len(embedding_events) > 0
+        assert "batch" in embedding_events[0]
+        assert "total_batches" in embedding_events[0]
+
+    def test_callback_receives_storing_events(self, tmp_path):
+        from codesherpa.ingestion import ingest
+
+        (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = []
+        mock_cursor.fetchone.return_value = [0]
+
+        mock_embedder = MagicMock()
+        mock_embedder.embed_batch.return_value = [[0.1] * 768]
+
+        events = []
+        ingest(mock_conn, mock_embedder, str(tmp_path), progress_callback=events.append)
+
+        storing_events = [e for e in events if e["phase"] == "storing"]
+        assert len(storing_events) > 0
+        assert "current" in storing_events[0]
+        assert "total" in storing_events[0]
+
+    def test_no_callback_still_works(self, tmp_path):
+        """ingest() works without a callback (backward compat)."""
+        from codesherpa.ingestion import ingest
+
+        (tmp_path / "a.py").write_text("x = 1\n")
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = []
+        mock_cursor.fetchone.return_value = [0]
+
+        mock_embedder = MagicMock()
+        mock_embedder.embed_batch.return_value = [[0.1] * 768]
+
+        stats = ingest(mock_conn, mock_embedder, str(tmp_path))
+        assert "chunks_stored" in stats
+
+
 class TestAutoLaunch:
     """The serve function opens the browser or prints the URL."""
 

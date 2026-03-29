@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import oracledb
@@ -174,6 +175,7 @@ def ingest(
     embedder: CodeRankEmbedder,
     root: str,
     project_id: int = 1,
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> dict[str, int]:
     """Run the full parse → embed → store pipeline.
 
@@ -185,11 +187,18 @@ def ingest(
         embedder: The embedding client.
         root: Root directory of the codebase to ingest.
         project_id: The project to associate chunks with.
+        progress_callback: Optional callback receiving progress dicts with
+            a ``phase`` key (``parsing``, ``embedding``, ``storing``,
+            ``complete``).
 
     Returns:
         A dict with keys: chunks_stored, files_skipped, files_updated,
         files_deleted.
     """
+    def _emit(event: dict) -> None:
+        if progress_callback is not None:
+            progress_callback(event)
+
     stats = {
         "chunks_stored": 0,
         "files_skipped": 0,
@@ -201,6 +210,7 @@ def ingest(
         existing_hashes = _get_existing_file_hashes(cursor, project_id)
 
         # Parse the codebase
+        _emit({"phase": "parsing", "detail": "Parsing codebase..."})
         all_chunks, errors = parse_codebase(root)
         if errors:
             for err in errors:
@@ -256,18 +266,32 @@ def ingest(
 
             # Embed in batches with progress
             batch_size = 32
+            total_batches = (len(texts) + batch_size - 1) // batch_size
             embeddings: list[list[float]] = []
             for i in tqdm(range(0, len(texts), batch_size),
                           desc="Embedding chunks",
                           unit="batch"):
+                batch_num = i // batch_size + 1
+                _emit({
+                    "phase": "embedding",
+                    "batch": batch_num,
+                    "total_batches": total_batches,
+                })
                 batch = texts[i : i + batch_size]
                 embeddings.extend(embedder.embed_batch(batch))
 
             # Insert in per-file groups for correct hash association
             idx = 0
-            for rel_path, chunks in tqdm(files_to_embed.items(),
-                                         desc="Storing chunks",
-                                         unit="file"):
+            total_files = len(files_to_embed)
+            for file_num, (rel_path, chunks) in enumerate(
+                tqdm(files_to_embed.items(), desc="Storing chunks", unit="file"),
+                start=1,
+            ):
+                _emit({
+                    "phase": "storing",
+                    "current": file_num,
+                    "total": total_files,
+                })
                 n = len(chunks)
                 chunk_embeddings = embeddings[idx : idx + n]
                 _insert_chunks(
