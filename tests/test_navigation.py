@@ -512,3 +512,222 @@ class TestFileTreeInPrompts:
         prompt_text = " ".join(str(m.content) for m in synth_call)
         assert "app/server.py" in prompt_text
         assert "app/routes.py" in prompt_text
+
+
+class TestKeyFilePatterns:
+    """Tests for _KEY_FILE_PATTERNS matching project config, build, and deploy files."""
+
+    def test_existing_patterns_still_match(self):
+        """Existing patterns (readme, changelog, entry points) continue to match."""
+        from codesherpa.navigation import _KEY_FILE_PATTERNS
+
+        existing_should_match = [
+            "README.md",
+            "readme.txt",
+            "CHANGELOG.md",
+            "changelog",
+            "CONTRIBUTING.md",
+            "contributing.rst",
+            "LICENSE",
+            "license.txt",
+            "main.py",
+            "app.js",
+            "index.html",
+            "server.ts",
+            "cli.py",
+        ]
+        for filename in existing_should_match:
+            assert _KEY_FILE_PATTERNS.search(filename), (
+                f"Expected '{filename}' to match _KEY_FILE_PATTERNS"
+            )
+
+    def test_project_config_build_files_match(self):
+        """Project config and build files match the pattern."""
+        from codesherpa.navigation import _KEY_FILE_PATTERNS
+
+        config_files = [
+            "pyproject.toml",
+            "setup.py",
+            "setup.cfg",
+            "package.json",
+            "Cargo.toml",
+            "go.mod",
+            "pom.xml",
+            "build.gradle",
+            "Makefile",
+            "CMakeLists.txt",
+        ]
+        for filename in config_files:
+            assert _KEY_FILE_PATTERNS.search(filename), (
+                f"Expected '{filename}' to match _KEY_FILE_PATTERNS"
+            )
+
+    def test_container_deploy_files_match(self):
+        """Container and deployment files match the pattern."""
+        from codesherpa.navigation import _KEY_FILE_PATTERNS
+
+        deploy_files = [
+            "Dockerfile",
+            "docker-compose.yml",
+            "docker-compose.yaml",
+        ]
+        for filename in deploy_files:
+            assert _KEY_FILE_PATTERNS.search(filename), (
+                f"Expected '{filename}' to match _KEY_FILE_PATTERNS"
+            )
+
+    def test_unrelated_files_do_not_match(self):
+        """Unrelated filenames should not match the pattern."""
+        from codesherpa.navigation import _KEY_FILE_PATTERNS
+
+        should_not_match = [
+            "utils.py",
+            "random.txt",
+            "helpers.js",
+            "models.py",
+            "test_main.py",
+            "data.csv",
+            "styles.css",
+        ]
+        for filename in should_not_match:
+            assert not _KEY_FILE_PATTERNS.search(filename), (
+                f"Expected '{filename}' NOT to match _KEY_FILE_PATTERNS"
+            )
+
+
+def _make_search_result_lang(path, code, language, chunk_type="module"):
+    """Helper to create a SearchResult with a specific language."""
+    return SearchResult(
+        code_text=code, file_path=path, chunk_type=chunk_type,
+        language=language, start_char=0, end_char=len(code), score=0.85,
+    )
+
+
+class TestExtractDependenciesMultiLanguage:
+    """Tests for multi-language dependency extraction."""
+
+    # --- JavaScript / TypeScript ---
+
+    def test_extracts_js_import_from(self):
+        """Extracts ES module imports: import X from 'Y'."""
+        code = "import React from 'react';\nimport { useState } from 'react';"
+        chunk = _make_search_result_lang("app.js", code, "javascript")
+        deps = extract_dependencies([chunk])
+        import_targets = [d["target"] for d in deps if d["type"] == "import"]
+        assert "react" in import_targets
+
+    def test_extracts_js_require(self):
+        """Extracts CommonJS require('Y') calls."""
+        code = "const fs = require('fs');\nconst path = require('path');"
+        chunk = _make_search_result_lang("app.js", code, "javascript")
+        deps = extract_dependencies([chunk])
+        import_targets = [d["target"] for d in deps if d["type"] == "import"]
+        assert "fs" in import_targets
+        assert "path" in import_targets
+
+    def test_extracts_js_dynamic_import(self):
+        """Extracts dynamic import('Y') calls."""
+        code = "const mod = await import('lodash');"
+        chunk = _make_search_result_lang("app.js", code, "javascript")
+        deps = extract_dependencies([chunk])
+        import_targets = [d["target"] for d in deps if d["type"] == "import"]
+        assert "lodash" in import_targets
+
+    def test_extracts_ts_imports(self):
+        """TypeScript uses the same patterns as JavaScript."""
+        code = "import { Component } from '@angular/core';\nconst x = require('express');"
+        chunk = _make_search_result_lang("app.ts", code, "typescript")
+        deps = extract_dependencies([chunk])
+        import_targets = [d["target"] for d in deps if d["type"] == "import"]
+        assert "@angular/core" in import_targets
+        assert "express" in import_targets
+
+    # --- Go ---
+
+    def test_extracts_go_single_import(self):
+        """Extracts Go single-line import statements."""
+        code = 'import "fmt"\n\nfunc main() {}'
+        chunk = _make_search_result_lang("main.go", code, "go")
+        deps = extract_dependencies([chunk])
+        import_targets = [d["target"] for d in deps if d["type"] == "import"]
+        assert "fmt" in import_targets
+
+    def test_extracts_go_multi_import(self):
+        """Extracts Go multi-line import blocks."""
+        code = 'import (\n\t"fmt"\n\t"os"\n\t"net/http"\n)\n\nfunc main() {}'
+        chunk = _make_search_result_lang("main.go", code, "go")
+        deps = extract_dependencies([chunk])
+        import_targets = [d["target"] for d in deps if d["type"] == "import"]
+        assert "fmt" in import_targets
+        assert "os" in import_targets
+        assert "net/http" in import_targets
+
+    # --- Java ---
+
+    def test_extracts_java_import(self):
+        """Extracts Java import statements."""
+        code = "import com.example.Foo;\nimport java.util.List;\n\npublic class Bar {}"
+        chunk = _make_search_result_lang("Bar.java", code, "java")
+        deps = extract_dependencies([chunk])
+        import_targets = [d["target"] for d in deps if d["type"] == "import"]
+        assert "com.example.Foo" in import_targets
+        assert "java.util.List" in import_targets
+
+    def test_extracts_java_extends(self):
+        """Extracts Java class inheritance via extends."""
+        code = "public class Dog extends Animal {\n}"
+        chunk = _make_search_result_lang("Dog.java", code, "java")
+        deps = extract_dependencies([chunk])
+        inherit_targets = [d["target"] for d in deps if d["type"] == "inherits"]
+        assert "Animal" in inherit_targets
+
+    def test_extracts_java_implements(self):
+        """Extracts Java class inheritance via implements."""
+        code = "public class Dog extends Animal implements Runnable, Serializable {\n}"
+        chunk = _make_search_result_lang("Dog.java", code, "java")
+        deps = extract_dependencies([chunk])
+        inherit_targets = [d["target"] for d in deps if d["type"] == "inherits"]
+        assert "Animal" in inherit_targets
+        assert "Runnable" in inherit_targets
+        assert "Serializable" in inherit_targets
+
+    # --- Generic fallback ---
+
+    def test_generic_fallback_for_rust(self):
+        """Unsupported language (Rust) uses generic fallback to find 'use' statements."""
+        code = "use std::io;\nuse std::collections::HashMap;\n\nfn main() {}"
+        chunk = _make_search_result_lang("main.rs", code, "rust")
+        deps = extract_dependencies([chunk])
+        import_targets = [d["target"] for d in deps if d["type"] == "import"]
+        assert "std::io" in import_targets
+        assert "std::collections::HashMap" in import_targets
+
+    def test_generic_fallback_detects_include(self):
+        """Generic fallback detects #include statements (e.g. C/C++)."""
+        code = '#include <stdio.h>\n#include "myheader.h"\n\nint main() {}'
+        chunk = _make_search_result_lang("main.c", code, "c")
+        deps = extract_dependencies([chunk])
+        import_targets = [d["target"] for d in deps if d["type"] == "import"]
+        assert "stdio.h" in import_targets
+        assert "myheader.h" in import_targets
+
+    # --- Python still works ---
+
+    def test_python_extraction_still_works(self):
+        """Existing Python extraction behaviour is preserved."""
+        code = "import os\nfrom pathlib import Path\nclass Foo(Bar):\n    pass"
+        chunk = _make_search_result_lang("app.py", code, "python")
+        deps = extract_dependencies([chunk])
+        import_targets = [d["target"] for d in deps if d["type"] == "import"]
+        inherit_targets = [d["target"] for d in deps if d["type"] == "inherits"]
+        assert "os" in import_targets
+        assert "pathlib" in import_targets
+        assert "Bar" in inherit_targets
+
+    def test_function_calls_extracted_for_all_languages(self):
+        """Function call extraction works regardless of language."""
+        code = "function handler() {\n  process_data(items);\n  save(result);\n}"
+        chunk = _make_search_result_lang("app.js", code, "javascript")
+        deps = extract_dependencies([chunk])
+        call_targets = [d["target"] for d in deps if d["type"] == "calls"]
+        assert "process_data" in call_targets

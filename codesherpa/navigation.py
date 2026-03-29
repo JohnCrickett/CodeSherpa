@@ -144,7 +144,13 @@ def _format_file_tree(file_tree: list[str]) -> str:
 _KEY_FILE_PATTERNS = re.compile(
     r"(^readme|^changelog|^contributing|^license)"
     r"|"
-    r"(^main\.|^app\.|^index\.|^server\.|^cli\.)",
+    r"(^main\.|^app\.|^index\.|^server\.|^cli\.)"
+    r"|"
+    r"(^pyproject\.toml$|^setup\.py$|^setup\.cfg$|^package\.json$"
+    r"|^Cargo\.toml$|^go\.mod$|^pom\.xml$|^build\.gradle$"
+    r"|^Makefile$|^CMakeLists\.txt$)"
+    r"|"
+    r"(^Dockerfile$|^docker-compose\.ya?ml$)",
     re.IGNORECASE,
 )
 
