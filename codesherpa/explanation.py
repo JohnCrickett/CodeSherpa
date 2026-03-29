@@ -1,11 +1,16 @@
 """LLM-powered code explanations using LangChain retrieval chains."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from codesherpa.embeddings import CodeRankEmbedder
 from codesherpa.retrieval import SearchResult, hybrid_search
+
+if TYPE_CHECKING:
+    from codesherpa.embeddings import CodeRankEmbedder
 
 SYSTEM_PROMPT = """\
 You are CodeSherpa, an AI assistant that explains code in plain language.

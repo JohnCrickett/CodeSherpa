@@ -4,15 +4,20 @@ Wires the code parser into the embedding client and Oracle Database storage,
 with support for re-ingestion of changed files.
 """
 
+from __future__ import annotations
+
 import hashlib
 import logging
 import os
+from typing import TYPE_CHECKING
 
 import oracledb
 from tqdm import tqdm
 
-from codesherpa.embeddings import CodeRankEmbedder
 from codesherpa.parser import CodeChunk, parse_codebase, walk_directory
+
+if TYPE_CHECKING:
+    from codesherpa.embeddings import CodeRankEmbedder
 
 logger = logging.getLogger(__name__)
 

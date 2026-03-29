@@ -1,12 +1,17 @@
 """Semantic retrieval: hybrid vector + full-text search over code chunks."""
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import oracledb
 
-from codesherpa.embeddings import CodeRankEmbedder
 from codesherpa.ingestion import TABLE_NAME
+
+if TYPE_CHECKING:
+    from codesherpa.embeddings import CodeRankEmbedder
 
 logger = logging.getLogger(__name__)
 

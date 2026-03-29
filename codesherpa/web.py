@@ -1,6 +1,8 @@
 """FastAPI web interface for CodeSherpa."""
 
+import threading
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 
 import oracledb
@@ -26,18 +28,83 @@ class QuestionRequest(BaseModel):
     active_file: str | None = None
 
 
-def create_app(conn, embedder, llm) -> FastAPI:
+class _LazyLoader:
+    """Loads the embedding model and LLM in a background thread on first access."""
+
+    def __init__(self, embedder_factory: Callable, llm_factory: Callable) -> None:
+        self._embedder_factory = embedder_factory
+        self._llm_factory = llm_factory
+        self._embedder = None
+        self._llm = None
+        self._ready = threading.Event()
+
+    def _load(self) -> None:
+        self._embedder = self._embedder_factory()
+        self._llm = self._llm_factory()
+        self._ready.set()
+
+    def start(self) -> None:
+        """Start loading models in a background thread."""
+        threading.Thread(target=self._load, daemon=True).start()
+
+    def _ensure_loaded(self) -> None:
+        """Block until models are loaded."""
+        self._ready.wait()
+
+    @property
+    def embedder(self):
+        self._ensure_loaded()
+        return self._embedder
+
+    @property
+    def llm(self):
+        self._ensure_loaded()
+        return self._llm
+
+    @property
+    def ready(self) -> bool:
+        return self._ready.is_set()
+
+
+def create_app(
+    conn,
+    embedder=None,
+    llm=None,
+    embedder_factory: Callable | None = None,
+    llm_factory: Callable | None = None,
+) -> FastAPI:
     """Create and configure the FastAPI application.
+
+    Accepts either pre-loaded instances (embedder, llm) or factory functions
+    (embedder_factory, llm_factory) for lazy loading.
 
     Args:
         conn: Oracle Database connection.
-        embedder: CodeRankEmbedder instance.
-        llm: LangChain LLM instance.
+        embedder: CodeRankEmbedder instance (eager).
+        llm: LangChain LLM instance (eager).
+        embedder_factory: Callable that returns an embedder (lazy).
+        llm_factory: Callable that returns an LLM (lazy).
 
     Returns:
         Configured FastAPI application.
     """
+    if embedder is not None and llm is not None:
+        # Eager mode: wrap in a loader that's already done
+        loader = _LazyLoader(lambda: embedder, lambda: llm)
+        loader._embedder = embedder
+        loader._llm = llm
+        loader._ready.set()
+    elif embedder_factory is not None and llm_factory is not None:
+        loader = _LazyLoader(embedder_factory, llm_factory)
+        loader.start()
+    else:
+        raise ValueError("Provide either (embedder, llm) or (embedder_factory, llm_factory)")
+
     app = FastAPI(title="CodeSherpa", version="0.1.0")
+
+    @app.get("/api/status")
+    def api_status():
+        return {"models_ready": loader.ready}
 
     @app.get("/api/projects")
     def api_list_projects():
@@ -129,7 +196,7 @@ def create_app(conn, embedder, llm) -> FastAPI:
                     f"Question: {question}"
                 )
 
-        result = explain(conn, embedder, llm, question, project_id=project_id)
+        result = explain(conn, loader.embedder, loader.llm, question, project_id=project_id)
         return {
             "explanation": result.explanation,
             "sources": [
@@ -153,7 +220,7 @@ def create_app(conn, embedder, llm) -> FastAPI:
         except ProjectNotFoundError:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        results = hybrid_search(conn, embedder, req.question, project_id=project_id)
+        results = hybrid_search(conn, loader.embedder, req.question, project_id=project_id)
         return [
             {
                 "code_text": r.code_text,

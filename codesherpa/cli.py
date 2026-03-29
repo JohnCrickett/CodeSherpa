@@ -3,25 +3,6 @@
 import argparse
 import sys
 
-from codesherpa.config import MissingConfigError, load_config
-from codesherpa.db import DatabaseConnectionError, get_connection
-from codesherpa.embeddings import CodeRankEmbedder
-from codesherpa.explanation import ExplanationResult, explain
-from codesherpa.ingestion import ensure_schema, ingest
-from codesherpa.llm import get_llm
-from codesherpa.project import (
-    ProjectNotFoundError,
-    delete_project,
-    ensure_projects_schema,
-    get_or_create_project,
-    get_project,
-    list_projects,
-    migrate_orphaned_chunks,
-    update_project_stats,
-)
-from codesherpa.repo import RepoError, resolve_source
-from codesherpa.retrieval import SearchResult, hybrid_search
-
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the CLI."""
@@ -85,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def format_results(results: list[SearchResult]) -> str:
+def format_results(results) -> str:
     """Format search results for display.
 
     Args:
@@ -108,7 +89,7 @@ def format_results(results: list[SearchResult]) -> str:
     return "\n".join(parts)
 
 
-def format_explanation(result: ExplanationResult) -> str:
+def format_explanation(result) -> str:
     """Format an explanation result for display.
 
     Args:
@@ -128,7 +109,7 @@ def format_explanation(result: ExplanationResult) -> str:
 
 
 def run_query_repl(
-    conn, embedder: CodeRankEmbedder, project_id: int
+    conn, embedder, project_id: int
 ) -> None:
     """Run the interactive query REPL.
 
@@ -137,6 +118,8 @@ def run_query_repl(
         embedder: Embedding client for query encoding.
         project_id: The project to restrict searches to.
     """
+    from codesherpa.retrieval import hybrid_search
+
     print("CodeSherpa query mode. Type 'quit' or 'exit' to leave.\n")
     while True:
         try:
@@ -162,6 +145,9 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    from codesherpa.config import MissingConfigError, load_config
+    from codesherpa.db import DatabaseConnectionError, get_connection
+
     try:
         config = load_config()
     except MissingConfigError as exc:
@@ -179,11 +165,26 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     try:
+        from codesherpa.ingestion import ensure_schema
+        from codesherpa.project import (
+            ProjectNotFoundError,
+            delete_project,
+            ensure_projects_schema,
+            get_or_create_project,
+            get_project,
+            list_projects,
+            migrate_orphaned_chunks,
+            update_project_stats,
+        )
+
         ensure_projects_schema(conn)
         ensure_schema(conn)
         migrate_orphaned_chunks(conn)
 
         if args.command == "ingest":
+            from codesherpa.ingestion import ingest
+            from codesherpa.repo import RepoError, resolve_source
+
             try:
                 local_path = resolve_source(args.source)
             except RepoError as exc:
@@ -195,6 +196,7 @@ def main(argv: list[str] | None = None) -> None:
 
             project_id = get_or_create_project(conn, project_name, local_path)
 
+            from codesherpa.embeddings import CodeRankEmbedder
             print("Loading embedding model...")
             embedder = CodeRankEmbedder()
             print("Ingesting codebase...")
@@ -225,6 +227,7 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"Project error: {exc}", file=sys.stderr)
                 sys.exit(1)
 
+            from codesherpa.embeddings import CodeRankEmbedder
             print("Loading embedding model...")
             embedder = CodeRankEmbedder()
             run_query_repl(conn, embedder, project_id=project["id"])
@@ -236,6 +239,9 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"Project error: {exc}", file=sys.stderr)
                 sys.exit(1)
 
+            from codesherpa.embeddings import CodeRankEmbedder
+            from codesherpa.explanation import explain
+            from codesherpa.llm import get_llm
             print("Loading embedding model...")
             embedder = CodeRankEmbedder()
             llm = get_llm(api_key=config.llm_api_key, model=config.llm_model)
@@ -273,10 +279,19 @@ def main(argv: list[str] | None = None) -> None:
 
             from codesherpa.web import create_app, open_browser
 
-            print("Loading embedding model...")
-            embedder = CodeRankEmbedder()
-            llm = get_llm(api_key=config.llm_api_key, model=config.llm_model)
-            app = create_app(conn=conn, embedder=embedder, llm=llm)
+            def _make_embedder():
+                from codesherpa.embeddings import CodeRankEmbedder
+                return CodeRankEmbedder()
+
+            def _make_llm():
+                from codesherpa.llm import get_llm
+                return get_llm(api_key=config.llm_api_key, model=config.llm_model)
+
+            app = create_app(
+                conn=conn,
+                embedder_factory=_make_embedder,
+                llm_factory=_make_llm,
+            )
 
             url = f"http://{args.host}:{args.port}"
             if not args.no_browser:

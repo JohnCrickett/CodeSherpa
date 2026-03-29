@@ -152,7 +152,7 @@ class TestQueryREPL:
         ]
 
         with patch("builtins.input", side_effect=["find foo", "quit"]), \
-             patch("codesherpa.cli.hybrid_search", return_value=mock_results), \
+             patch("codesherpa.retrieval.hybrid_search", return_value=mock_results), \
              patch("builtins.print") as mock_print:
             run_query_repl(conn, embedder, project_id=1)
 
@@ -166,7 +166,7 @@ class TestQueryREPL:
         embedder = MagicMock()
 
         with patch("builtins.input", side_effect=["", "  ", "quit"]), \
-             patch("codesherpa.cli.hybrid_search") as mock_search, \
+             patch("codesherpa.retrieval.hybrid_search") as mock_search, \
              patch("builtins.print"):
             run_query_repl(conn, embedder, project_id=1)
 
