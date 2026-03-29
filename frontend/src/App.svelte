@@ -1,9 +1,22 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { listProjects, getFileTree } from "./lib/api";
   import type { Project } from "./lib/api";
   import CodeViewer from "./lib/CodeViewer.svelte";
   import FileTree from "./lib/FileTree.svelte";
   import QueryPanel from "./lib/QueryPanel.svelte";
+  import * as Select from "$lib/components/ui/select";
+  import { ScrollArea } from "$lib/components/ui/scroll-area";
+  import { Button } from "$lib/components/ui/button";
+
+  function getInitialTheme(): boolean {
+    const stored = localStorage.getItem("theme");
+    if (stored === "dark") return true;
+    if (stored === "light") return false;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+
+  let dark = $state(getInitialTheme());
 
   let projects: Project[] = $state([]);
   let selectedProject: Project | null = $state(null);
@@ -39,118 +52,94 @@
     selectedFile = selectedFile === path ? null : path;
   }
 
-  function handleProjectChange(e: Event) {
-    const select = e.target as HTMLSelectElement;
-    const project = projects.find((p) => p.id === Number(select.value));
+  function handleProjectChange(value: string | undefined) {
+    if (!value) return;
+    const project = projects.find((p) => String(p.id) === value);
     if (project) selectProject(project);
   }
 
-  import { onMount } from "svelte";
+  function toggleTheme() {
+    dark = !dark;
+    document.documentElement.classList.toggle("dark", dark);
+    localStorage.setItem("theme", dark ? "dark" : "light");
+  }
 
   onMount(() => {
+    document.documentElement.classList.toggle("dark", dark);
     loadProjects();
   });
 </script>
 
-<header>
-  <h1>CodeSherpa</h1>
-  <div class="project-selector">
-    {#if loadingProjects}
-      <span class="loading-text">Loading projects...</span>
-    {:else if projects.length === 0}
-      <span class="loading-text">No projects found. Ingest a codebase first.</span>
-    {:else}
-      <label for="project-select">Project:</label>
-      <select id="project-select" onchange={handleProjectChange}>
-        {#each projects as project}
-          <option value={project.id} selected={selectedProject?.id === project.id}>
-            {project.name}
-            ({project.file_count} files, {project.chunk_count} chunks)
-          </option>
-        {/each}
-      </select>
+<div class="flex h-screen flex-col text-[13px]">
+  <!-- Header -->
+  <header class="flex h-10 shrink-0 items-center justify-between border-b px-4">
+    <span class="text-sm font-semibold tracking-tight">CodeSherpa</span>
+    <div class="flex items-center gap-2">
+      {#if loadingProjects}
+        <span class="text-xs text-muted-foreground">Loading...</span>
+      {:else if projects.length === 0}
+        <span class="text-xs text-muted-foreground">No projects found.</span>
+      {:else}
+        <Select.Root
+          type="single"
+          value={selectedProject ? String(selectedProject.id) : undefined}
+          onValueChange={handleProjectChange}
+        >
+          <Select.Trigger class="h-7 w-[240px] text-xs">
+            {#if selectedProject}
+              {selectedProject.name}
+              <span class="text-muted-foreground ml-1">
+                {selectedProject.file_count} files
+              </span>
+            {:else}
+              Select project
+            {/if}
+          </Select.Trigger>
+          <Select.Content>
+            {#each projects as project}
+              <Select.Item value={String(project.id)} class="text-xs">
+                {project.name}
+                <span class="ml-auto text-muted-foreground">
+                  {project.file_count} files, {project.chunk_count} chunks
+                </span>
+              </Select.Item>
+            {/each}
+          </Select.Content>
+        </Select.Root>
+      {/if}
+      <Button variant="ghost" size="icon" class="h-7 w-7" onclick={toggleTheme} aria-label="Toggle theme">
+        {#if dark}
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        {:else}
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        {/if}
+      </Button>
+    </div>
+  </header>
+
+  <!-- Main content -->
+  <div class="flex flex-1 overflow-hidden">
+    {#if selectedProject}
+      <!-- Sidebar -->
+      <aside class="w-60 min-w-60 border-r">
+        <ScrollArea class="h-full">
+          <div class="p-2">
+            {#if loadingFiles}
+              <p class="px-2 py-1 text-xs text-muted-foreground">Loading...</p>
+            {:else}
+              <FileTree {files} {selectedFile} onselect={handleFileSelect} />
+            {/if}
+          </div>
+        </ScrollArea>
+      </aside>
+
+      <!-- Content area -->
+      <main class="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
+        {#if selectedFile}
+          <CodeViewer projectId={selectedProject.id} filePath={selectedFile} />
+        {/if}
+        <QueryPanel projectId={selectedProject.id} />
+      </main>
     {/if}
   </div>
-</header>
-
-<main>
-  {#if selectedProject}
-    <aside>
-      {#if loadingFiles}
-        <div class="loading-text">Loading file tree...</div>
-      {:else}
-        <FileTree {files} {selectedFile} onselect={handleFileSelect} />
-      {/if}
-    </aside>
-    <section class="content">
-      {#if selectedFile}
-        <CodeViewer projectId={selectedProject.id} filePath={selectedFile} />
-      {/if}
-      <QueryPanel projectId={selectedProject.id} />
-    </section>
-  {/if}
-</main>
-
-<style>
-  header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 24px;
-    background: var(--bg-surface);
-    border-bottom: 1px solid var(--border);
-  }
-
-  h1 {
-    font-size: 1.2rem;
-    color: var(--accent);
-  }
-
-  .project-selector {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  label {
-    font-size: 0.9rem;
-    color: var(--text-muted);
-  }
-
-  select {
-    background: var(--bg-input);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 6px 10px;
-    font-size: 0.9rem;
-  }
-
-  main {
-    display: flex;
-    flex: 1;
-    overflow: hidden;
-  }
-
-  aside {
-    width: 280px;
-    min-width: 280px;
-    padding: 16px;
-    border-right: 1px solid var(--border);
-    overflow-y: auto;
-  }
-
-  .content {
-    flex: 1;
-    padding: 16px 24px;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .loading-text {
-    color: var(--text-muted);
-    font-size: 0.9rem;
-  }
-</style>
+</div>
