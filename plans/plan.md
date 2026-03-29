@@ -17,7 +17,7 @@
 | [x] 13 | Expanded key file detection: broaden patterns for build, config, and deployment files | [task-13-expanded-key-files.md](../specs/task-13-expanded-key-files.md) | REQ-KEY-01 to 03 |
 | [x] 14 | Language-aware dependency extraction: multi-language import/inheritance patterns | [task-14-language-aware-deps.md](../specs/task-14-language-aware-deps.md) | REQ-DEP-01 to 03 |
 | [x] 15 | Unified query classification: single LLM call for all four query types | [task-15-unified-classification.md](../specs/task-15-unified-classification.md) | REQ-CLASS-01 to 03 |
-| [ ] 16 | LLM tool calling: iterative codebase exploration via search, read, and list tools | [task-16-llm-tool-calling.md](../specs/task-16-llm-tool-calling.md) | REQ-TOOL-01 to 07 |
+| [x] 16 | LLM tool calling: iterative codebase exploration via search, read, and list tools | [task-16-llm-tool-calling.md](../specs/task-16-llm-tool-calling.md) | REQ-TOOL-01 to 07 |
 
 ## Dependency Order
 

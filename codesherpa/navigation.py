@@ -7,15 +7,17 @@ and specific code questions with dependency linking.
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import re
 from collections.abc import Callable
 from typing import Any, TypedDict
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
 from langgraph.graph import END, StateGraph
 
-from codesherpa.explanation import ExplanationResult, _format_context
+from codesherpa.explanation import ExplanationResult, _format_context, explain
 from codesherpa.ingestion import TABLE_NAME
 from codesherpa.memory import (
     search_episodic_memory,
@@ -252,10 +254,8 @@ def route_by_type(state: NavigationState) -> str:
     qt = state["query_type"]
     if qt == "map":
         return "handle_map"
-    if qt == "exploration":
-        return "plan_exploration"
-    # Both follow_up and specific use multi-step retrieval
-    return "multi_step_retrieve"
+    # All non-map routes use the tool-calling agent
+    return "tool_calling_agent"
 
 
 def handle_map_query(state: NavigationState) -> dict:
@@ -554,6 +554,206 @@ def _format_history_context(history: list[dict]) -> str:
     return "\n".join(parts)
 
 
+TOOL_CALLING_SYSTEM_PROMPT = """\
+You are CodeSherpa, an AI assistant that explains code in plain language.
+
+You have access to tools to explore a codebase. Use them to gather the context
+you need before answering the user's question.
+
+Available tools:
+- search_code: Search for code matching a query (semantic + full-text hybrid search)
+- read_file: Read the full contents of a specific file
+- list_files: List files matching a glob pattern (e.g. "*.py", "src/**/*.ts")
+
+Strategy:
+1. Start by searching for code related to the question
+2. If you need more context, read specific files or list files by pattern
+3. Once you have enough context, provide a clear, cited answer
+4. Always cite specific file paths and function/class names in your answer
+
+Rules:
+- Explain code clearly, citing specific file paths and function/class names.
+- When explaining relationships between parts of the codebase, reference both sides.
+- If the provided context is insufficient to fully answer, say what you can determine
+  and note what is missing.
+- Keep explanations concise and accurate."""
+
+DEFAULT_MAX_ITERATIONS = 10
+
+
+def _build_tools(state: NavigationState) -> list:
+    """Build LangChain tool instances bound to the current state."""
+    conn = state["conn"]
+    embedder = state["embedder"]
+    project_id = state["project_id"]
+    file_tree = state.get("file_tree", [])
+
+    @tool
+    def search_code(query: str) -> str:
+        """Search the codebase for code matching a query.
+
+        Args:
+            query: The search query to find relevant code.
+        """
+        results = hybrid_search(conn, embedder, query, project_id=project_id)
+        if not results:
+            return "No results found."
+        parts = []
+        for r in results:
+            parts.append(f"File: {r.file_path} ({r.chunk_type})\n```\n{r.code_text}\n```")
+        return "\n\n".join(parts)
+
+    @tool
+    def read_file(file_path: str) -> str:
+        """Read the full contents of a file from the codebase.
+
+        Args:
+            file_path: Path to the file to read.
+        """
+        return read_file_from_db(conn, project_id, file_path)
+
+    @tool
+    def list_files(pattern: str) -> str:
+        """List files in the project matching a glob pattern.
+
+        Args:
+            pattern: Glob pattern to filter files (e.g. '*.py', 'src/**/*.ts').
+        """
+        matched = [f for f in file_tree if fnmatch.fnmatch(f, pattern)]
+        if not matched:
+            return f"No files matching '{pattern}'."
+        return "\n".join(matched)
+
+    return [search_code, read_file, list_files]
+
+
+def _execute_tool(
+    tool_name: str, tool_args: dict, tools_by_name: dict,
+) -> str:
+    """Execute a tool by name and return the result as a string."""
+    if tool_name not in tools_by_name:
+        return f"Unknown tool: {tool_name}"
+    try:
+        return str(tools_by_name[tool_name].invoke(tool_args))
+    except Exception as exc:
+        return f"Error executing {tool_name}: {exc}"
+
+
+def tool_calling_agent(
+    state: NavigationState,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+) -> dict:
+    """Run the LLM tool-calling agent loop.
+
+    Sends the user question to the LLM with tools bound. If the LLM requests
+    tool calls, executes them and loops until the LLM produces a final text
+    response or the iteration limit is reached.
+
+    Falls back to explain() if tool binding fails.
+    """
+    llm = state["llm"]
+    query = state["query"]
+
+    # Build tools bound to the current state
+    tools = _build_tools(state)
+    tools_by_name = {t.name: t for t in tools}
+
+    try:
+        llm_with_tools = llm.bind_tools(tools)
+    except Exception:
+        logger.warning("Tool calling not supported, falling back to explain()")
+        result = explain(
+            state["conn"], state["embedder"], llm,
+            query, project_id=state["project_id"],
+        )
+        return {
+            "response": result,
+            "dependencies": [],
+            "explored_files": [s.file_path for s in result.sources],
+        }
+
+    # Build initial messages
+    prompt_parts = [TOOL_CALLING_SYSTEM_PROMPT]
+
+    # Add file tree context
+    file_tree = state.get("file_tree", [])
+    if file_tree:
+        prompt_parts.append(_format_file_tree(file_tree))
+
+    # Add memory context
+    if state["episodic_memories"] or state["semantic_memories"]:
+        memory_ctx = _format_memory_context(
+            state["episodic_memories"], state["semantic_memories"],
+        )
+        prompt_parts.append(f"Memory context:\n{memory_ctx}")
+
+    # Add conversation history for follow-ups
+    if state.get("conversation_history"):
+        history_ctx = _format_history_context(state["conversation_history"])
+        prompt_parts.append(history_ctx)
+
+    messages: list = [
+        SystemMessage(content="\n\n".join(prompt_parts)),
+        HumanMessage(content=query),
+    ]
+
+    _emit_progress(state, "Exploring codebase...")
+
+    explored_files: list[str] = []
+
+    for _iteration in range(max_iterations):
+        response = llm_with_tools.invoke(messages)
+        messages.append(response)
+
+        # If no tool calls, we have the final answer
+        if not getattr(response, "tool_calls", None):
+            return {
+                "response": ExplanationResult(
+                    explanation=response.content,
+                    sources=[],
+                ),
+                "dependencies": [],
+                "explored_files": list(dict.fromkeys(explored_files)),
+            }
+
+        # Execute each tool call
+        for tc in response.tool_calls:
+            tool_name = tc["name"]
+            tool_args = tc["args"]
+            tool_id = tc["id"]
+
+            _emit_progress(state, "Tool call", f"{tool_name}: {tool_args}")
+
+            result_str = _execute_tool(tool_name, tool_args, tools_by_name)
+
+            messages.append(ToolMessage(
+                tool_call_id=tool_id,
+                name=tool_name,
+                content=result_str,
+            ))
+
+            # Track explored files from search results
+            if tool_name == "read_file" and "file_path" in tool_args:
+                explored_files.append(tool_args["file_path"])
+
+    # Iteration limit reached — use last response content
+    last_content = messages[-1].content if messages else ""
+    # Find the last AI message for the answer
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage):
+            last_content = msg.content
+            break
+
+    return {
+        "response": ExplanationResult(
+            explanation=last_content or "Reached exploration limit.",
+            sources=[],
+        ),
+        "dependencies": [],
+        "explored_files": list(dict.fromkeys(explored_files)),
+    }
+
+
 def multi_step_retrieve(state: NavigationState) -> dict:
     """Multi-step retrieval: retrieve → extract references → retrieve again → explain.
 
@@ -762,16 +962,14 @@ def build_navigation_graph() -> Any:
     Graph structure:
         check_memory → classify_query → route_by_type →
             handle_map → update_memory → END
-            plan_exploration → update_memory → END
-            multi_step_retrieve → update_memory → END
+            tool_calling_agent → update_memory → END
     """
     graph = StateGraph(NavigationState)
 
     graph.add_node("check_memory", check_memory)
     graph.add_node("classify_query", classify_query)
     graph.add_node("handle_map", handle_map_query)
-    graph.add_node("plan_exploration", plan_exploration)
-    graph.add_node("multi_step_retrieve", multi_step_retrieve)
+    graph.add_node("tool_calling_agent", tool_calling_agent)
     graph.add_node("update_memory", update_memory)
 
     graph.set_entry_point("check_memory")
@@ -781,13 +979,11 @@ def build_navigation_graph() -> Any:
         route_by_type,
         {
             "handle_map": "handle_map",
-            "plan_exploration": "plan_exploration",
-            "multi_step_retrieve": "multi_step_retrieve",
+            "tool_calling_agent": "tool_calling_agent",
         },
     )
     graph.add_edge("handle_map", "update_memory")
-    graph.add_edge("plan_exploration", "update_memory")
-    graph.add_edge("multi_step_retrieve", "update_memory")
+    graph.add_edge("tool_calling_agent", "update_memory")
     graph.add_edge("update_memory", END)
 
     return graph.compile()
